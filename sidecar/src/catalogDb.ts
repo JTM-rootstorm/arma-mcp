@@ -1,9 +1,11 @@
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 
 export const CATALOG_SCHEMA_VERSION = 1 as const;
 export const DEFAULT_CATALOG_DB_PATH = ".mcp-cache/arma/catalog.sqlite";
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 export type CatalogDb = {
   db: DatabaseSync;
@@ -63,13 +65,167 @@ export type ClassTagInput = {
 };
 
 export function openCatalogDb(dbPath = DEFAULT_CATALOG_DB_PATH): CatalogDb {
-  const resolvedPath = resolve(dbPath);
+  const resolvedPath = resolve(repoRoot, process.env.ARMA_MCP_CATALOG_DB ?? dbPath);
   mkdirSync(dirname(resolvedPath), { recursive: true });
   const db = new DatabaseSync(resolvedPath);
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA synchronous = NORMAL;");
   return { db, path: resolvedPath };
+}
+
+export function getCatalogStatus(catalogDb: CatalogDb): Record<string, unknown> {
+  const classCount = scalarCount(catalogDb, "classes");
+  const measurementCount = scalarCount(catalogDb, "class_measurements");
+  const screenshotCount = scalarCount(catalogDb, "class_screenshots");
+  const latestScan = getLatestScanManifest(catalogDb);
+  return {
+    path: catalogDb.path,
+    schemaVersion: CATALOG_SCHEMA_VERSION,
+    latestScan,
+    counts: {
+      classes: classCount,
+      measurements: measurementCount,
+      screenshots: screenshotCount
+    }
+  };
+}
+
+function scalarCount(catalogDb: CatalogDb, tableName: string): number {
+  const row = catalogDb.db.prepare(`SELECT COUNT(*) AS count FROM ${tableName}`).get() as { count: number };
+  return Number(row.count);
+}
+
+export type CatalogSearchInput = {
+  query?: string;
+  kind?: string;
+  tags?: string[];
+  visualTags?: string[];
+  limit?: number;
+};
+
+export function searchCatalogClasses(catalogDb: CatalogDb, input: CatalogSearchInput): Record<string, unknown>[] {
+  const limit = Math.max(1, Math.min(input.limit ?? 25, 100));
+  const filters: string[] = [];
+  const values: Array<string | number | null> = [];
+  let from = "classes";
+  if (input.query?.trim()) {
+    from = "classes_fts JOIN classes ON classes.rowid = classes_fts.rowid";
+    filters.push("classes_fts MATCH ?");
+    values.push(input.query.trim());
+  }
+  if (input.kind) {
+    filters.push("classes.kind = ?");
+    values.push(input.kind);
+  }
+  for (const tag of input.tags ?? []) {
+    filters.push(
+      `EXISTS (
+        SELECT 1 FROM class_tags
+        WHERE class_tags.class_name = classes.class_name
+          AND class_tags.tag = ?
+      )`
+    );
+    values.push(tag);
+  }
+  for (const tag of input.visualTags ?? []) {
+    filters.push(
+      `EXISTS (
+        SELECT 1 FROM class_visual_tags
+        WHERE class_visual_tags.class_name = classes.class_name
+          AND class_visual_tags.tag = ?
+      )`
+    );
+    values.push(tag);
+  }
+  values.push(limit);
+
+  const rows = catalogDb.db
+    .prepare(
+      `SELECT
+        classes.class_name AS className,
+        classes.display_name AS displayName,
+        classes.kind,
+        classes.subkind,
+        classes.tags_json AS tagsJson,
+        classes.source_mod_guess AS sourceMod,
+        classes.editor_category AS editorCategory,
+        classes.editor_subcategory AS editorSubcategory,
+        class_measurements.width_m AS widthM,
+        class_measurements.depth_m AS depthM,
+        class_measurements.height_m AS heightM
+       FROM ${from}
+       LEFT JOIN class_measurements ON class_measurements.class_name = classes.class_name
+       ${filters.length > 0 ? `WHERE ${filters.join(" AND ")}` : ""}
+       ORDER BY classes.display_name IS NULL, classes.display_name, classes.class_name
+       LIMIT ?`
+    )
+    .all(...values);
+  return rows.map((row) => formatCatalogSearchRow(row as CatalogSearchRow));
+}
+
+export function getCatalogClass(catalogDb: CatalogDb, className: string): Record<string, unknown> | null {
+  const row = catalogDb.db
+    .prepare(
+      `SELECT
+        classes.*,
+        class_measurements.status AS measurement_status,
+        class_measurements.error AS measurement_error,
+        class_measurements.width_m,
+        class_measurements.depth_m,
+        class_measurements.height_m,
+        class_measurements.size_of
+       FROM classes
+       LEFT JOIN class_measurements ON class_measurements.class_name = classes.class_name
+       WHERE classes.class_name = ?`
+    )
+    .get(className) as Record<string, unknown> | undefined;
+  return row ? formatCatalogClassRow(catalogDb, row) : null;
+}
+
+export function getCatalogTags(catalogDb: CatalogDb, className?: string): Record<string, unknown>[] {
+  const sql = className
+    ? `SELECT tag, source, confidence, COUNT(*) AS count FROM class_tags WHERE class_name = ? GROUP BY tag, source, confidence ORDER BY tag`
+    : `SELECT tag, source, AVG(confidence) AS confidence, COUNT(*) AS count FROM class_tags GROUP BY tag, source ORDER BY tag`;
+  const rows = className ? catalogDb.db.prepare(sql).all(className) : catalogDb.db.prepare(sql).all();
+  return rows.map((row) => ({ ...(row as Record<string, unknown>) }));
+}
+
+export function listCatalogMods(catalogDb: CatalogDb): Record<string, unknown>[] {
+  return catalogDb.db
+    .prepare(
+      `SELECT mod_name AS modName, mod_dir AS modDir, mod_hash AS modHash, is_loaded AS isLoaded
+       FROM mods
+       ORDER BY mod_name, mod_dir`
+    )
+    .all()
+    .map((row) => ({ ...(row as Record<string, unknown>) }));
+}
+
+export function listCatalogFactions(catalogDb: CatalogDb): Record<string, unknown>[] {
+  return catalogDb.db
+    .prepare(
+      `SELECT faction, COUNT(*) AS count
+       FROM classes
+       WHERE faction IS NOT NULL AND faction != ''
+       GROUP BY faction
+       ORDER BY faction`
+    )
+    .all()
+    .map((row) => ({ ...(row as Record<string, unknown>) }));
+}
+
+export function listCatalogCategories(catalogDb: CatalogDb): Record<string, unknown>[] {
+  return catalogDb.db
+    .prepare(
+      `SELECT editor_category AS editorCategory, editor_subcategory AS editorSubcategory, COUNT(*) AS count
+       FROM classes
+       WHERE editor_category IS NOT NULL AND editor_category != ''
+       GROUP BY editor_category, editor_subcategory
+       ORDER BY editor_category, editor_subcategory`
+    )
+    .all()
+    .map((row) => ({ ...(row as Record<string, unknown>) }));
 }
 
 export function closeCatalogDb(catalogDb: CatalogDb): void {
@@ -392,6 +548,55 @@ export function updateFtsIndex(catalogDb: CatalogDb, className: string): void {
 function safeJsonArray(input: string): string[] {
   const parsed = JSON.parse(input) as unknown;
   return Array.isArray(parsed) ? parsed.map((item) => String(item)) : [];
+}
+
+type CatalogSearchRow = {
+  className: string;
+  displayName: string | null;
+  kind: string | null;
+  subkind: string | null;
+  tagsJson: string;
+  sourceMod: string | null;
+  editorCategory: string | null;
+  editorSubcategory: string | null;
+  widthM: number | null;
+  depthM: number | null;
+  heightM: number | null;
+};
+
+function formatCatalogSearchRow(row: CatalogSearchRow): Record<string, unknown> {
+  return {
+    class_name: row.className,
+    display_name: row.displayName,
+    kind: row.kind,
+    subkind: row.subkind,
+    tags: safeJsonArray(row.tagsJson),
+    visual_tags: [],
+    source_mod: row.sourceMod,
+    editor_category: row.editorCategory,
+    editor_subcategory: row.editorSubcategory,
+    dimensions:
+      row.widthM === null || row.depthM === null || row.heightM === null
+        ? null
+        : { width_m: row.widthM, depth_m: row.depthM, height_m: row.heightM }
+  };
+}
+
+function formatCatalogClassRow(catalogDb: CatalogDb, row: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...row,
+    weapons_json: undefined,
+    magazines_json: undefined,
+    linked_items_json: undefined,
+    raw_config_json: undefined,
+    tags_json: undefined,
+    weapons: safeJsonArray(String(row.weapons_json ?? "[]")),
+    magazines: safeJsonArray(String(row.magazines_json ?? "[]")),
+    linked_items: safeJsonArray(String(row.linked_items_json ?? "[]")),
+    raw_config: JSON.parse(String(row.raw_config_json ?? "{}")) as Record<string, unknown>,
+    tags: safeJsonArray(String(row.tags_json ?? "[]")),
+    class_tags: getCatalogTags(catalogDb, String(row.class_name))
+  };
 }
 
 const CATALOG_SCHEMA_SQL = `

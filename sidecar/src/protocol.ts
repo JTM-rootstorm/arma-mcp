@@ -78,7 +78,18 @@ export const actionNameSchema = z.enum([
   "eden.list_layers",
   "terrain.sample_area",
   "assets.search_classes",
-  "assets.get_class"
+  "assets.get_class",
+  "catalog.scanStart",
+  "catalog.scanChunk",
+  "catalog.scanFinish",
+  "catalog.measureClass",
+  "catalog.measureSearchResults",
+  "catalog.measureMissing",
+  "camera.createPreviewScene",
+  "camera.inspectClass",
+  "camera.captureClassAngles",
+  "camera.captureCurrentView",
+  "camera.destroyPreviewScene"
 ]);
 
 export const actionPacketSchema = z

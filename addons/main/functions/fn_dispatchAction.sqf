@@ -96,6 +96,41 @@ switch (_action) do {
     case "terrain.sample_area": {
         _result = [_params] call AMCP_fnc_sampleTerrainArea;
     };
+    case "catalog.scanStart": {
+        private _targets = _params getOrDefault ["targets", [
+            "CfgPatches",
+            "CfgVehicles",
+            "CfgWeapons",
+            "CfgMagazines",
+            "CfgAmmo",
+            "CfgGroups",
+            "CfgFactionClasses",
+            "CfgEditorCategories",
+            "CfgEditorSubcategories",
+            "Cfg3DEN"
+        ]];
+        private _scanId = _params getOrDefault ["scanId", format ["arma-scan-%1", diag_tickTime]];
+        private _addons = ("true" configClasses (configFile >> "CfgPatches")) apply {configName _x};
+        _result = createHashMapFromArray [
+            ["scan_id", _scanId],
+            ["targets", _targets],
+            ["chunk_size", _params getOrDefault ["chunkSize", 100]],
+            ["game_version", productVersion select 2],
+            ["world_name", worldName],
+            ["loaded_mods", []],
+            ["loaded_addons", _addons]
+        ];
+    };
+    case "catalog.scanChunk": {
+        _result = [_params] call AMCP_fnc_scanConfigChunk;
+    };
+    case "catalog.scanFinish": {
+        _result = createHashMapFromArray [
+            ["scan_id", _params getOrDefault ["scanId", ""]],
+            ["class_counts", _params getOrDefault ["classCounts", createHashMap]],
+            ["finished", true]
+        ];
+    };
     case "eden.create_entity": {
         _result = [_params] call AMCP_fnc_createEntity;
     };

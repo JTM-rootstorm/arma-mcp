@@ -39,6 +39,7 @@ class CfgFunctions {
             class registerEntity {};
             class resolveEntity {};
             class sampleTerrainArea {};
+            class scanConfigChunk {};
             class searchClasses {};
             class startEdenBridge {};
             class validateBatch {};

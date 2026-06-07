@@ -24,7 +24,10 @@ createHashMapFromArray [
         "eden.batch",
         "eden.validate_plan",
         "eden.capture_composition",
-        "eden.apply_composition"
+        "eden.apply_composition",
+        "catalog.scanStart",
+        "catalog.scanChunk",
+        "catalog.scanFinish"
     ]],
     ["features", createHashMapFromArray [
         ["typedActions", true],
@@ -32,6 +35,7 @@ createHashMapFromArray [
         ["readSnapshots", true],
         ["writeBatch", true],
         ["composition", true],
+        ["catalogScan", true],
         ["rawSqf", false],
         ["historyGrouping", true]
     ]]

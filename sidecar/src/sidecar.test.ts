@@ -6,8 +6,12 @@ import { generateCheckpointPlan } from "./checkpointPlanner.js";
 import {
   closeCatalogDb,
   ensureCatalogSchema,
+  getCatalogClass,
   getLatestScanManifest,
+  listCatalogCategories,
+  listCatalogFactions,
   openCatalogDb,
+  searchCatalogClasses,
   upsertCatalogClass,
   upsertClassTags,
   updateFtsIndex,
@@ -96,6 +100,23 @@ describe("catalog database", () => {
         )
         .all("terminal");
       expect(matches).toMatchObject([{ className: "Land_Republic_Terminal_F", displayName: "Republic Terminal" }]);
+      expect(searchCatalogClasses(catalog, { query: "terminal", kind: "prop", tags: ["console"] })).toMatchObject([
+        {
+          class_name: "Land_Republic_Terminal_F",
+          display_name: "Republic Terminal",
+          kind: "prop",
+          subkind: "terminal"
+        }
+      ]);
+      expect(getCatalogClass(catalog, "Land_Republic_Terminal_F")).toMatchObject({
+        class_name: "Land_Republic_Terminal_F",
+        display_name: "Republic Terminal",
+        raw_config: { scope: 2 }
+      });
+      expect(listCatalogFactions(catalog)).toMatchObject([{ faction: "BLU_F", count: 1 }]);
+      expect(listCatalogCategories(catalog)).toMatchObject([
+        { editorCategory: "EdCat_Structures", editorSubcategory: "EdSubcat_Electronics", count: 1 }
+      ]);
     } finally {
       closeCatalogDb(catalog);
     }

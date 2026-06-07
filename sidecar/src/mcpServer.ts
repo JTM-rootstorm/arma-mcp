@@ -1,6 +1,20 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { BridgeConfig } from "./httpBridge.js";
+import { DEFAULT_SCAN_TARGETS, ingestCatalogChunk, stableHash, type CatalogChunk } from "./catalog.js";
+import {
+  closeCatalogDb,
+  ensureCatalogSchema,
+  getCatalogClass,
+  getCatalogStatus,
+  getCatalogTags,
+  listCatalogCategories,
+  listCatalogFactions,
+  listCatalogMods,
+  openCatalogDb,
+  searchCatalogClasses,
+  writeScanManifest
+} from "./catalogDb.js";
 import { generateCheckpointPlan, validateCheckpointClasses } from "./checkpointPlanner.js";
 import {
   generateAaSite,
@@ -30,6 +44,26 @@ import {
 import type { ArmaMcpState } from "./state.js";
 
 const emptyInputSchema = z.object({});
+const catalogScanToolSchema = z.object({
+  scanId: z.string().trim().min(1).max(160).optional(),
+  targets: z.array(z.string().trim().min(1).max(80)).max(20).default([...DEFAULT_SCAN_TARGETS]),
+  chunkSize: z.number().int().positive().max(500).default(100),
+  maxChunks: z.number().int().positive().max(50_000).default(10_000),
+  timeoutMs: z.number().int().positive().max(300_000).default(120_000)
+});
+const catalogSearchToolSchema = z.object({
+  query: z.string().trim().max(200).optional(),
+  kind: z.string().trim().min(1).max(80).optional(),
+  tags: z.array(z.string().trim().min(1).max(80)).max(20).optional(),
+  visual_tags: z.array(z.string().trim().min(1).max(80)).max(20).optional(),
+  limit: z.number().int().positive().max(100).default(25)
+});
+const catalogClassToolSchema = z.object({
+  className: z.string().trim().min(1).max(200)
+});
+const catalogTagsToolSchema = z.object({
+  className: z.string().trim().min(1).max(200).optional()
+});
 const readOptionsSchema = z.object({
   includeAttributes: z.boolean().default(true),
   includeConfig: z.boolean().default(true),
@@ -329,6 +363,7 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig)
     assetSearchToolSchema,
     "Search Arma Classes"
   );
+  registerCatalogTools(server, state);
   registerActionTool(
     server,
     state,
@@ -538,6 +573,199 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig)
   );
 
   return server;
+}
+
+function registerCatalogTools(server: McpServer, state: ArmaMcpState): void {
+  server.registerTool(
+    "arma.catalog.status",
+    {
+      title: "Catalog Status",
+      description: "Inspect the local Arma catalog SQLite cache.",
+      inputSchema: emptyInputSchema.shape
+    },
+    async () =>
+      withCatalogDb((catalogDb) =>
+        jsonToolResult({
+          ok: true,
+          catalog: getCatalogStatus(catalogDb)
+        })
+      )
+  );
+
+  server.registerTool(
+    "arma.catalog.scan",
+    {
+      title: "Scan Loaded Arma Catalog",
+      description: "Ask Eden to stream loaded config class chunks into the local SQLite catalog cache.",
+      inputSchema: catalogScanToolSchema.shape
+    },
+    async (input) => {
+      const parsed = catalogScanToolSchema.parse(input);
+      return withCatalogDb(async (catalogDb) => {
+        const started = await dispatchCatalogAction(state, "catalog.scanStart", {
+          scanId: parsed.scanId,
+          targets: parsed.targets,
+          chunkSize: parsed.chunkSize
+        }, parsed.timeoutMs);
+        const startPayload = asRecord(started.result);
+        const scanId = String(startPayload.scan_id ?? startPayload.scanId ?? parsed.scanId ?? new Date().toISOString());
+        writeScanManifest(catalogDb, {
+          scanId,
+          gameVersion: stringOrNull(startPayload.game_version ?? startPayload.gameVersion),
+          worldName: stringOrNull(startPayload.world_name ?? startPayload.worldName),
+          loadedModsHash: stableHash(startPayload.loaded_mods ?? startPayload.loadedMods ?? []),
+          loadedAddonsHash: stableHash(startPayload.loaded_addons ?? startPayload.loadedAddons ?? []),
+          status: "running"
+        });
+
+        const counts: Record<string, number> = {};
+        for (const target of parsed.targets) {
+          let chunkIndex = 0;
+          let finishedTarget = false;
+          while (!finishedTarget) {
+            if (chunkIndex >= parsed.maxChunks) {
+              throw new Error(`Catalog scan exceeded maxChunks=${parsed.maxChunks} while scanning ${target}`);
+            }
+            const chunkResult = await dispatchCatalogAction(
+              state,
+              "catalog.scanChunk",
+              { scanId, configPath: target, chunkIndex, chunkSize: parsed.chunkSize },
+              parsed.timeoutMs
+            );
+            const chunk = asRecord(chunkResult.result) as CatalogChunk;
+            counts[target] = (counts[target] ?? 0) + ingestCatalogChunk(catalogDb, scanId, chunk);
+            finishedTarget = chunk.is_last_chunk === true || chunk.isLastChunk === true;
+            chunkIndex += 1;
+          }
+        }
+
+        await dispatchCatalogAction(state, "catalog.scanFinish", { scanId, classCounts: counts }, parsed.timeoutMs);
+        writeScanManifest(catalogDb, {
+          scanId,
+          gameVersion: stringOrNull(startPayload.game_version ?? startPayload.gameVersion),
+          worldName: stringOrNull(startPayload.world_name ?? startPayload.worldName),
+          loadedModsHash: stableHash(startPayload.loaded_mods ?? startPayload.loadedMods ?? []),
+          loadedAddonsHash: stableHash(startPayload.loaded_addons ?? startPayload.loadedAddons ?? []),
+          classCounts: counts,
+          finishedAt: new Date().toISOString(),
+          status: "complete"
+        });
+
+        return jsonToolResult({ ok: true, scan_id: scanId, counts, catalog: getCatalogStatus(catalogDb) });
+      });
+    }
+  );
+
+  server.registerTool(
+    "arma.catalog.search",
+    {
+      title: "Search Catalog",
+      description: "Search cached Arma classes by text, kind, tags, or visual tags.",
+      inputSchema: catalogSearchToolSchema.shape
+    },
+    async (input) => {
+      const parsed = catalogSearchToolSchema.parse(input);
+      return withCatalogDb((catalogDb) =>
+        jsonToolResult({
+          results: searchCatalogClasses(catalogDb, {
+            query: parsed.query,
+            kind: parsed.kind,
+            tags: parsed.tags,
+            visualTags: parsed.visual_tags,
+            limit: parsed.limit
+          })
+        })
+      );
+    }
+  );
+
+  server.registerTool(
+    "arma.catalog.getClass",
+    {
+      title: "Get Catalog Class",
+      description: "Fetch one cached Arma class by class_name.",
+      inputSchema: catalogClassToolSchema.shape
+    },
+    async (input) => {
+      const parsed = catalogClassToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => jsonToolResult({ class: getCatalogClass(catalogDb, parsed.className) }));
+    }
+  );
+
+  server.registerTool(
+    "arma.catalog.getTags",
+    {
+      title: "Get Catalog Tags",
+      description: "List tags for one class or aggregate tags for the whole catalog.",
+      inputSchema: catalogTagsToolSchema.shape
+    },
+    async (input) => {
+      const parsed = catalogTagsToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => jsonToolResult({ tags: getCatalogTags(catalogDb, parsed.className) }));
+    }
+  );
+
+  server.registerTool(
+    "arma.catalog.listMods",
+    {
+      title: "List Catalog Mods",
+      description: "List loaded mods stored in the catalog cache.",
+      inputSchema: emptyInputSchema.shape
+    },
+    async () => withCatalogDb((catalogDb) => jsonToolResult({ mods: listCatalogMods(catalogDb) }))
+  );
+
+  server.registerTool(
+    "arma.catalog.listFactions",
+    {
+      title: "List Catalog Factions",
+      description: "List factions discovered in the catalog cache.",
+      inputSchema: emptyInputSchema.shape
+    },
+    async () => withCatalogDb((catalogDb) => jsonToolResult({ factions: listCatalogFactions(catalogDb) }))
+  );
+
+  server.registerTool(
+    "arma.catalog.listCategories",
+    {
+      title: "List Catalog Categories",
+      description: "List Eden editor categories discovered in the catalog cache.",
+      inputSchema: emptyInputSchema.shape
+    },
+    async () => withCatalogDb((catalogDb) => jsonToolResult({ categories: listCatalogCategories(catalogDb) }))
+  );
+}
+
+async function withCatalogDb<T>(callback: (catalogDb: ReturnType<typeof openCatalogDb>) => T | Promise<T>): Promise<T> {
+  const catalogDb = openCatalogDb();
+  try {
+    ensureCatalogSchema(catalogDb);
+    return await callback(catalogDb);
+  } finally {
+    closeCatalogDb(catalogDb);
+  }
+}
+
+async function dispatchCatalogAction(
+  state: ArmaMcpState,
+  action: ArmaMcpActionName,
+  params: Record<string, unknown>,
+  timeoutMs: number
+) {
+  const queued = state.queueAction({ action, mode: "read", params, timeoutMs });
+  const result = await queued.result;
+  if (!result.ok) {
+    throw new Error(result.error?.message ?? `Arma action ${action} failed`);
+  }
+  return result;
+}
+
+function asRecord(input: unknown): Record<string, unknown> {
+  return input && typeof input === "object" && !Array.isArray(input) ? (input as Record<string, unknown>) : {};
+}
+
+function stringOrNull(input: unknown): string | null {
+  return typeof input === "string" ? input : null;
 }
 
 function registerLocalGeneratorTool<T extends z.ZodObject<z.ZodRawShape>>(
