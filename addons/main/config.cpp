@@ -31,6 +31,7 @@ class CfgFunctions {
             class edenListEntities {};
             class getCapabilities {};
             class log {};
+            class measureClass {};
             class pollCommands {};
             class postInit {
                 postInit = 1;

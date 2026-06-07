@@ -64,6 +64,18 @@ export type ClassTagInput = {
   confidence?: number;
 };
 
+export type ClassMeasurementInput = {
+  status: "measured" | "failed" | "skipped";
+  error?: string | null;
+  bboxMin?: [number, number, number] | null;
+  bboxMax?: [number, number, number] | null;
+  center?: [number, number, number] | null;
+  widthM?: number | null;
+  depthM?: number | null;
+  heightM?: number | null;
+  sizeOf?: number | null;
+};
+
 export function openCatalogDb(dbPath = DEFAULT_CATALOG_DB_PATH): CatalogDb {
   const resolvedPath = resolve(repoRoot, process.env.ARMA_MCP_CATALOG_DB ?? dbPath);
   mkdirSync(dirname(resolvedPath), { recursive: true });
@@ -148,6 +160,7 @@ export function searchCatalogClasses(catalogDb: CatalogDb, input: CatalogSearchI
         classes.kind,
         classes.subkind,
         classes.tags_json AS tagsJson,
+        COALESCE((SELECT json_group_array(tag) FROM class_visual_tags WHERE class_visual_tags.class_name = classes.class_name), '[]') AS visualTagsJson,
         classes.source_mod_guess AS sourceMod,
         classes.editor_category AS editorCategory,
         classes.editor_subcategory AS editorSubcategory,
@@ -181,6 +194,87 @@ export function getCatalogClass(catalogDb: CatalogDb, className: string): Record
     )
     .get(className) as Record<string, unknown> | undefined;
   return row ? formatCatalogClassRow(catalogDb, row) : null;
+}
+
+export function writeClassMeasurement(catalogDb: CatalogDb, className: string, measurement: ClassMeasurementInput): void {
+  catalogDb.db
+    .prepare(
+      `INSERT INTO class_measurements (
+        class_name,
+        status,
+        error,
+        bbox_min_x,
+        bbox_min_y,
+        bbox_min_z,
+        bbox_max_x,
+        bbox_max_y,
+        bbox_max_z,
+        center_x,
+        center_y,
+        center_z,
+        width_m,
+        depth_m,
+        height_m,
+        size_of,
+        measured_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(class_name) DO UPDATE SET
+        status = excluded.status,
+        error = excluded.error,
+        bbox_min_x = excluded.bbox_min_x,
+        bbox_min_y = excluded.bbox_min_y,
+        bbox_min_z = excluded.bbox_min_z,
+        bbox_max_x = excluded.bbox_max_x,
+        bbox_max_y = excluded.bbox_max_y,
+        bbox_max_z = excluded.bbox_max_z,
+        center_x = excluded.center_x,
+        center_y = excluded.center_y,
+        center_z = excluded.center_z,
+        width_m = excluded.width_m,
+        depth_m = excluded.depth_m,
+        height_m = excluded.height_m,
+        size_of = excluded.size_of,
+        measured_at = CURRENT_TIMESTAMP`
+    )
+    .run(
+      className,
+      measurement.status,
+      measurement.error ?? null,
+      measurement.bboxMin?.[0] ?? null,
+      measurement.bboxMin?.[1] ?? null,
+      measurement.bboxMin?.[2] ?? null,
+      measurement.bboxMax?.[0] ?? null,
+      measurement.bboxMax?.[1] ?? null,
+      measurement.bboxMax?.[2] ?? null,
+      measurement.center?.[0] ?? null,
+      measurement.center?.[1] ?? null,
+      measurement.center?.[2] ?? null,
+      measurement.widthM ?? null,
+      measurement.depthM ?? null,
+      measurement.heightM ?? null,
+      measurement.sizeOf ?? null
+    );
+}
+
+export function listClassesMissingMeasurements(catalogDb: CatalogDb, limit = 25, kinds?: string[]): Record<string, unknown>[] {
+  const filters = ["class_measurements.class_name IS NULL"];
+  const values: Array<string | number> = [];
+  if (kinds && kinds.length > 0) {
+    filters.push(`classes.kind IN (${kinds.map(() => "?").join(", ")})`);
+    values.push(...kinds);
+  }
+  values.push(Math.max(1, Math.min(limit, 200)));
+  return catalogDb.db
+    .prepare(
+      `SELECT classes.class_name AS className, classes.display_name AS displayName, classes.kind, classes.subkind
+       FROM classes
+       LEFT JOIN class_measurements ON class_measurements.class_name = classes.class_name
+       WHERE ${filters.join(" AND ")}
+       ORDER BY classes.display_name IS NULL, classes.display_name, classes.class_name
+       LIMIT ?`
+    )
+    .all(...values)
+    .map((row) => ({ ...(row as Record<string, unknown>) }));
 }
 
 export function getCatalogTags(catalogDb: CatalogDb, className?: string): Record<string, unknown>[] {
@@ -226,6 +320,109 @@ export function listCatalogCategories(catalogDb: CatalogDb): Record<string, unkn
     )
     .all()
     .map((row) => ({ ...(row as Record<string, unknown>) }));
+}
+
+export function findCatalogByDimensions(
+  catalogDb: CatalogDb,
+  input: { minWidth?: number; maxWidth?: number; minDepth?: number; maxDepth?: number; minHeight?: number; maxHeight?: number; limit?: number }
+): Record<string, unknown>[] {
+  const filters = ["class_measurements.status = 'measured'"];
+  const values: Array<string | number> = [];
+  for (const [field, min, max] of [
+    ["width_m", input.minWidth, input.maxWidth],
+    ["depth_m", input.minDepth, input.maxDepth],
+    ["height_m", input.minHeight, input.maxHeight]
+  ] as const) {
+    if (min !== undefined) {
+      filters.push(`class_measurements.${field} >= ?`);
+      values.push(min);
+    }
+    if (max !== undefined) {
+      filters.push(`class_measurements.${field} <= ?`);
+      values.push(max);
+    }
+  }
+  values.push(Math.max(1, Math.min(input.limit ?? 25, 100)));
+  return catalogDb.db
+    .prepare(
+      `SELECT
+        classes.class_name AS className,
+        classes.display_name AS displayName,
+        classes.kind,
+        classes.subkind,
+        classes.tags_json AS tagsJson,
+        COALESCE((SELECT json_group_array(tag) FROM class_visual_tags WHERE class_visual_tags.class_name = classes.class_name), '[]') AS visualTagsJson,
+        classes.source_mod_guess AS sourceMod,
+        classes.editor_category AS editorCategory,
+        classes.editor_subcategory AS editorSubcategory,
+        class_measurements.width_m AS widthM,
+        class_measurements.depth_m AS depthM,
+        class_measurements.height_m AS heightM
+       FROM classes
+       JOIN class_measurements ON class_measurements.class_name = classes.class_name
+       WHERE ${filters.join(" AND ")}
+       ORDER BY classes.display_name IS NULL, classes.display_name, classes.class_name
+       LIMIT ?`
+    )
+    .all(...values)
+    .map((row) => formatCatalogSearchRow(row as CatalogSearchRow));
+}
+
+export function addCatalogVisualTag(
+  catalogDb: CatalogDb,
+  input: { className: string; tag: string; confidence?: number; source?: string; screenshotId?: number; inspectionRunId?: number }
+): void {
+  catalogDb.db
+    .prepare(
+      `INSERT INTO class_visual_tags (class_name, tag, confidence, source, screenshot_id, inspection_run_id)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(class_name, tag, source) DO UPDATE SET
+         confidence = excluded.confidence,
+         screenshot_id = excluded.screenshot_id,
+         inspection_run_id = excluded.inspection_run_id`
+    )
+    .run(
+      input.className,
+      input.tag,
+      input.confidence ?? 0.5,
+      input.source ?? "visual",
+      input.screenshotId ?? null,
+      input.inspectionRunId ?? null
+    );
+  updateFtsIndex(catalogDb, input.className);
+}
+
+export function listClassScreenshots(catalogDb: CatalogDb, className: string): Record<string, unknown>[] {
+  return catalogDb.db
+    .prepare(
+      `SELECT id, class_name AS className, inspection_run_id AS inspectionRunId, angle, file_path AS filePath, captured_at AS capturedAt
+       FROM class_screenshots
+       WHERE class_name = ?
+       ORDER BY captured_at DESC, id DESC`
+    )
+    .all(className)
+    .map((row) => ({ ...(row as Record<string, unknown>) }));
+}
+
+export function createVisualInspectionRun(
+  catalogDb: CatalogDb,
+  input: { className: string; status: string; error?: string | null; angles?: string[]; screenshotDir?: string; resolution?: [number, number] }
+): number {
+  const result = catalogDb.db
+    .prepare(
+      `INSERT INTO visual_inspection_runs (class_name, status, error, angles_json, screenshot_dir, resolution_json, finished_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      input.className,
+      input.status,
+      input.error ?? null,
+      JSON.stringify(input.angles ?? []),
+      input.screenshotDir ?? null,
+      JSON.stringify(input.resolution ?? [1280, 720]),
+      input.status === "running" ? null : new Date().toISOString()
+    );
+  return Number(result.lastInsertRowid);
 }
 
 export function closeCatalogDb(catalogDb: CatalogDb): void {
@@ -486,34 +683,7 @@ export function updateFtsIndex(catalogDb: CatalogDb, className: string): void {
 
   const existingFtsRow = catalogDb.db.prepare("SELECT rowid FROM classes_fts WHERE rowid = ?").get(row.rowid);
   if (existingFtsRow) {
-    catalogDb.db
-      .prepare(
-        `INSERT INTO classes_fts (
-          classes_fts,
-          rowid,
-          class_name,
-          display_name,
-          kind,
-          subkind,
-          tags,
-          visual_tags,
-          editor_category,
-          editor_subcategory,
-          faction
-        ) VALUES ('delete', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        row.rowid,
-        row.className,
-        row.displayName ?? "",
-        row.kind ?? "",
-        row.subkind ?? "",
-        tags.join(" "),
-        visualTags.join(" "),
-        row.editorCategory ?? "",
-        row.editorSubcategory ?? "",
-        row.faction ?? ""
-      );
+    catalogDb.db.prepare("DELETE FROM classes_fts WHERE rowid = ?").run(row.rowid);
   }
 
   catalogDb.db
@@ -556,6 +726,7 @@ type CatalogSearchRow = {
   kind: string | null;
   subkind: string | null;
   tagsJson: string;
+  visualTagsJson: string;
   sourceMod: string | null;
   editorCategory: string | null;
   editorSubcategory: string | null;
@@ -571,7 +742,7 @@ function formatCatalogSearchRow(row: CatalogSearchRow): Record<string, unknown> 
     kind: row.kind,
     subkind: row.subkind,
     tags: safeJsonArray(row.tagsJson),
-    visual_tags: [],
+    visual_tags: safeJsonArray(row.visualTagsJson),
     source_mod: row.sourceMod,
     editor_category: row.editorCategory,
     editor_subcategory: row.editorSubcategory,
@@ -772,6 +943,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS classes_fts USING fts5(
     editor_category,
     editor_subcategory,
     faction,
-    content=''
+    content='',
+    contentless_delete=1
 );
 `;

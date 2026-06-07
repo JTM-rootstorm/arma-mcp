@@ -131,6 +131,44 @@ switch (_action) do {
             ["finished", true]
         ];
     };
+    case "catalog.measureClass": {
+        _result = [_params] call AMCP_fnc_measureClass;
+    };
+    case "camera.createPreviewScene": {
+        _ok = false;
+        _error = createHashMapFromArray [
+            ["code", "screenshot_capture_not_implemented"],
+            ["message", "Camera preview and screenshot capture are not implemented in this addon build."]
+        ];
+    };
+    case "camera.inspectClass": {
+        _ok = false;
+        _error = createHashMapFromArray [
+            ["code", "screenshot_capture_not_implemented"],
+            ["message", "Camera preview and screenshot capture are not implemented in this addon build."]
+        ];
+    };
+    case "camera.captureClassAngles": {
+        _ok = false;
+        _error = createHashMapFromArray [
+            ["code", "screenshot_capture_not_implemented"],
+            ["message", "Camera preview and screenshot capture are not implemented in this addon build."]
+        ];
+    };
+    case "camera.captureCurrentView": {
+        _ok = false;
+        _error = createHashMapFromArray [
+            ["code", "screenshot_capture_not_implemented"],
+            ["message", "Camera preview and screenshot capture are not implemented in this addon build."]
+        ];
+    };
+    case "camera.destroyPreviewScene": {
+        _ok = false;
+        _error = createHashMapFromArray [
+            ["code", "screenshot_capture_not_implemented"],
+            ["message", "Camera preview and screenshot capture are not implemented in this addon build."]
+        ];
+    };
     case "eden.create_entity": {
         _result = [_params] call AMCP_fnc_createEntity;
     };

@@ -6,15 +6,19 @@ import { generateCheckpointPlan } from "./checkpointPlanner.js";
 import {
   closeCatalogDb,
   ensureCatalogSchema,
+  addCatalogVisualTag,
+  findCatalogByDimensions,
   getCatalogClass,
   getLatestScanManifest,
   listCatalogCategories,
   listCatalogFactions,
+  listClassesMissingMeasurements,
   openCatalogDb,
   searchCatalogClasses,
   upsertCatalogClass,
   upsertClassTags,
   updateFtsIndex,
+  writeClassMeasurement,
   writeScanManifest
 } from "./catalogDb.js";
 import { generateAaSite, generateCoverLine, generateLz, generatePropWall, generateRoadCheckpoint, generateSmallOutpost } from "./generators.js";
@@ -117,6 +121,27 @@ describe("catalog database", () => {
       expect(listCatalogCategories(catalog)).toMatchObject([
         { editorCategory: "EdCat_Structures", editorSubcategory: "EdSubcat_Electronics", count: 1 }
       ]);
+
+      writeClassMeasurement(catalog, "Land_Republic_Terminal_F", {
+        status: "measured",
+        bboxMin: [-1, -2, 0],
+        bboxMax: [1, 2, 3],
+        center: [0, 0, 1.5],
+        widthM: 2,
+        depthM: 4,
+        heightM: 3,
+        sizeOf: 4
+      });
+      addCatalogVisualTag(catalog, { className: "Land_Republic_Terminal_F", tag: "console", confidence: 0.8 });
+      expect(searchCatalogClasses(catalog, { visualTags: ["console"] })[0]).toMatchObject({
+        class_name: "Land_Republic_Terminal_F",
+        visual_tags: ["console"]
+      });
+      expect(findCatalogByDimensions(catalog, { minWidth: 1, maxHeight: 4 })[0]).toMatchObject({
+        class_name: "Land_Republic_Terminal_F",
+        dimensions: { width_m: 2, depth_m: 4, height_m: 3 }
+      });
+      expect(listClassesMissingMeasurements(catalog)).toHaveLength(0);
     } finally {
       closeCatalogDb(catalog);
     }

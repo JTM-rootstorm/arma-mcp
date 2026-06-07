@@ -27,7 +27,13 @@ createHashMapFromArray [
         "eden.apply_composition",
         "catalog.scanStart",
         "catalog.scanChunk",
-        "catalog.scanFinish"
+        "catalog.scanFinish",
+        "catalog.measureClass",
+        "camera.createPreviewScene",
+        "camera.inspectClass",
+        "camera.captureClassAngles",
+        "camera.captureCurrentView",
+        "camera.destroyPreviewScene"
     ]],
     ["features", createHashMapFromArray [
         ["typedActions", true],
@@ -36,6 +42,8 @@ createHashMapFromArray [
         ["writeBatch", true],
         ["composition", true],
         ["catalogScan", true],
+        ["catalogMeasurement", true],
+        ["screenshotCapture", false],
         ["rawSqf", false],
         ["historyGrouping", true]
     ]]

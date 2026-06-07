@@ -1,18 +1,25 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { mkdirSync } from "node:fs";
 import type { BridgeConfig } from "./httpBridge.js";
 import { DEFAULT_SCAN_TARGETS, ingestCatalogChunk, stableHash, type CatalogChunk } from "./catalog.js";
 import {
+  addCatalogVisualTag,
   closeCatalogDb,
+  createVisualInspectionRun,
   ensureCatalogSchema,
+  findCatalogByDimensions,
   getCatalogClass,
   getCatalogStatus,
   getCatalogTags,
   listCatalogCategories,
   listCatalogFactions,
+  listClassesMissingMeasurements,
+  listClassScreenshots,
   listCatalogMods,
   openCatalogDb,
   searchCatalogClasses,
+  writeClassMeasurement,
   writeScanManifest
 } from "./catalogDb.js";
 import { generateCheckpointPlan, validateCheckpointClasses } from "./checkpointPlanner.js";
@@ -63,6 +70,64 @@ const catalogClassToolSchema = z.object({
 });
 const catalogTagsToolSchema = z.object({
   className: z.string().trim().min(1).max(200).optional()
+});
+const catalogMeasureClassToolSchema = z.object({
+  className: z.string().trim().min(1).max(200),
+  force: z.boolean().default(false),
+  timeoutMs: z.number().int().positive().max(120_000).default(60_000)
+});
+const catalogMeasureSearchResultsToolSchema = catalogSearchToolSchema.extend({
+  force: z.boolean().default(false),
+  timeoutMs: z.number().int().positive().max(120_000).default(60_000)
+});
+const catalogMeasureMissingToolSchema = z.object({
+  kinds: z.array(z.string().trim().min(1).max(80)).max(20).optional(),
+  limit: z.number().int().positive().max(100).default(25),
+  force: z.boolean().default(false),
+  timeoutMs: z.number().int().positive().max(120_000).default(60_000)
+});
+const visualInspectClassToolSchema = z.object({
+  className: z.string().trim().min(1).max(200),
+  angles: z.array(z.string().trim().min(1).max(40)).max(16).default(["front", "left", "right", "rear"]),
+  resolution: z.tuple([z.number().int().positive().max(7680), z.number().int().positive().max(4320)]).default([1280, 720]),
+  force: z.boolean().default(false)
+});
+const visualAddTagToolSchema = z.object({
+  className: z.string().trim().min(1).max(200),
+  tag: z.string().trim().min(1).max(80),
+  confidence: z.number().min(0).max(1).default(0.5),
+  source: z.string().trim().min(1).max(80).default("manual")
+});
+const findByDimensionsToolSchema = z.object({
+  minWidth: z.number().nonnegative().optional(),
+  maxWidth: z.number().nonnegative().optional(),
+  minDepth: z.number().nonnegative().optional(),
+  maxDepth: z.number().nonnegative().optional(),
+  minHeight: z.number().nonnegative().optional(),
+  maxHeight: z.number().nonnegative().optional(),
+  limit: z.number().int().positive().max(100).default(25)
+});
+const catalogRoleToolSchema = z.object({
+  role: z.string().trim().min(1).max(120),
+  limit: z.number().int().positive().max(100).default(25)
+});
+const findSimilarToolSchema = z.object({
+  className: z.string().trim().min(1).max(200),
+  limit: z.number().int().positive().max(100).default(25)
+});
+const compositionPlanToolSchema = z.object({
+  name: z.string().trim().min(1).max(120).default("catalog-composition"),
+  role: z.string().trim().min(1).max(120).optional(),
+  classes: z.array(z.string().trim().min(1).max(200)).max(100).optional(),
+  anchor: z
+    .object({
+      positionATL: z.tuple([z.number(), z.number(), z.number()]).default([0, 0, 0]),
+      dir: z.number().default(0)
+    })
+    .default({ positionATL: [0, 0, 0], dir: 0 })
+});
+const compositionExportToolSchema = z.object({
+  plan: z.record(z.string(), z.unknown())
 });
 const readOptionsSchema = z.object({
   includeAttributes: z.boolean().default(true),
@@ -364,6 +429,10 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig)
     "Search Arma Classes"
   );
   registerCatalogTools(server, state);
+  registerCatalogMeasurementTools(server, state);
+  registerEdenInspectionAliasTools(server, state);
+  registerVisualAndCameraTools(server);
+  registerCompositionCatalogTools(server);
   registerActionTool(
     server,
     state,
@@ -736,6 +805,507 @@ function registerCatalogTools(server: McpServer, state: ArmaMcpState): void {
   );
 }
 
+function registerCatalogMeasurementTools(server: McpServer, state: ArmaMcpState): void {
+  server.registerTool(
+    "arma.catalog.measureClass",
+    {
+      title: "Measure Catalog Class",
+      description: "Measure one safe catalog class in Arma and store bounding dimensions.",
+      inputSchema: catalogMeasureClassToolSchema.shape
+    },
+    async (input) => {
+      const parsed = catalogMeasureClassToolSchema.parse(input);
+      return withCatalogDb(async (catalogDb) =>
+        jsonToolResult({ result: await measureCatalogClass(catalogDb, state, parsed.className, parsed.force, parsed.timeoutMs) })
+      );
+    }
+  );
+
+  server.registerTool(
+    "arma.catalog.measureSearchResults",
+    {
+      title: "Measure Search Results",
+      description: "Measure safe classes returned by a catalog search.",
+      inputSchema: catalogMeasureSearchResultsToolSchema.shape
+    },
+    async (input) => {
+      const parsed = catalogMeasureSearchResultsToolSchema.parse(input);
+      return withCatalogDb(async (catalogDb) => {
+        const results = searchCatalogClasses(catalogDb, {
+          query: parsed.query,
+          kind: parsed.kind,
+          tags: parsed.tags,
+          visualTags: parsed.visual_tags,
+          limit: parsed.limit
+        });
+        const measured = [];
+        for (const result of results) {
+          measured.push(await measureCatalogClass(catalogDb, state, String(result.class_name), parsed.force, parsed.timeoutMs));
+        }
+        return jsonToolResult({ measured });
+      });
+    }
+  );
+
+  server.registerTool(
+    "arma.catalog.measureMissing",
+    {
+      title: "Measure Missing Catalog Classes",
+      description: "Measure safe catalog classes that do not have stored dimensions yet.",
+      inputSchema: catalogMeasureMissingToolSchema.shape
+    },
+    async (input) => {
+      const parsed = catalogMeasureMissingToolSchema.parse(input);
+      return withCatalogDb(async (catalogDb) => {
+        const candidates = listClassesMissingMeasurements(catalogDb, parsed.limit, parsed.kinds);
+        const measured = [];
+        for (const candidate of candidates) {
+          measured.push(await measureCatalogClass(catalogDb, state, String(candidate.className), parsed.force, parsed.timeoutMs));
+        }
+        return jsonToolResult({ measured });
+      });
+    }
+  );
+}
+
+function registerEdenInspectionAliasTools(server: McpServer, state: ArmaMcpState): void {
+  server.registerTool(
+    "arma.eden.listSelected",
+    {
+      title: "List Selected Eden Objects",
+      description: "List selected Eden objects and enrich them from the local catalog cache when possible.",
+      inputSchema: readOptionsSchema.shape
+    },
+    async (input) => {
+      const parsed = readOptionsSchema.parse(input);
+      const result = await dispatchCatalogAction(state, "eden.get_selection", parsed, 60_000);
+      return withCatalogDb((catalogDb) => jsonToolResult(enrichEdenResult(catalogDb, result.result)));
+    }
+  );
+
+  server.registerTool(
+    "arma.eden.listPlaced",
+    {
+      title: "List Placed Eden Objects",
+      description: "List placed Eden objects and enrich them from the local catalog cache when possible.",
+      inputSchema: entityListToolSchema.shape
+    },
+    async (input) => {
+      const parsed = entityListToolSchema.parse(input);
+      const result = await dispatchCatalogAction(state, "eden.list_entities", parsed, 60_000);
+      return withCatalogDb((catalogDb) => jsonToolResult(enrichEdenResult(catalogDb, result.result)));
+    }
+  );
+
+  server.registerTool(
+    "arma.eden.getObject",
+    {
+      title: "Get Eden Object",
+      description: "Fetch one Eden object snapshot and enrich it from the catalog cache when possible.",
+      inputSchema: getEntitySnapshotToolSchema.shape
+    },
+    async (input) => {
+      const parsed = getEntitySnapshotToolSchema.parse(input);
+      const result = await dispatchCatalogAction(state, "eden.get_entity_snapshot", parsed, 60_000);
+      return withCatalogDb((catalogDb) => jsonToolResult(enrichEdenResult(catalogDb, result.result)));
+    }
+  );
+
+  server.registerTool(
+    "arma.eden.getSynced",
+    {
+      title: "Get Eden Sync Relationships",
+      description: "Return sync relationship fields currently exposed by Eden snapshots.",
+      inputSchema: getEntitySnapshotToolSchema.shape
+    },
+    async (input) => {
+      const parsed = getEntitySnapshotToolSchema.parse(input);
+      const result = await dispatchCatalogAction(state, "eden.get_entity_snapshot", parsed, 60_000);
+      const snapshot = asRecord(asRecord(result.result).snapshot);
+      return jsonToolResult({
+        entityId: parsed.entityId,
+        synced_to: snapshot.synced_to ?? [],
+        attached_to: snapshot.attached_to ?? null,
+        note: "Sync relationship extraction is limited to fields currently exposed by the Eden snapshot handler."
+      });
+    }
+  );
+
+  server.registerTool(
+    "arma.eden.exportSelection",
+    {
+      title: "Export Eden Selection",
+      description: "Capture selected Eden objects as a data-only composition export.",
+      inputSchema: captureCompositionToolSchema.shape
+    },
+    async (input) => {
+      const parsed = captureCompositionToolSchema.parse(input);
+      const result = await dispatchCatalogAction(state, "eden.capture_composition", parsed, 60_000);
+      return jsonToolResult(result.result);
+    }
+  );
+}
+
+function registerVisualAndCameraTools(server: McpServer): void {
+  for (const toolName of [
+    "arma.camera.createPreviewScene",
+    "arma.camera.inspectClass",
+    "arma.camera.captureClassAngles",
+    "arma.camera.captureCurrentView",
+    "arma.camera.destroyPreviewScene"
+  ]) {
+    server.registerTool(
+      toolName,
+      {
+        title: toolName,
+        description: "Camera preview interface placeholder; screenshot capture backend is not implemented yet.",
+        inputSchema: emptyInputSchema.shape
+      },
+      async () => jsonToolResult({ ok: false, error: { code: "screenshot_capture_not_implemented" } })
+    );
+  }
+
+  server.registerTool(
+    "arma.visual.inspectClass",
+    {
+      title: "Inspect Class Visually",
+      description: "Create visual inspection bookkeeping and return a clear non-fatal screenshot backend error.",
+      inputSchema: visualInspectClassToolSchema.shape
+    },
+    async (input) => {
+      const parsed = visualInspectClassToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => {
+        const catalogClass = getCatalogClass(catalogDb, parsed.className);
+        if (!catalogClass) {
+          throw new Error(`Class ${parsed.className} is not present in the local catalog cache`);
+        }
+        if (!parsed.force && !isSafeToMeasure(catalogClass)) {
+          throw new Error(`Class ${parsed.className} is not safe for visual inspection without force=true`);
+        }
+        const screenshotDir = `.mcp-cache/arma/screenshots/${safePathSegment(parsed.className)}`;
+        mkdirSync(screenshotDir, { recursive: true });
+        const runId = createVisualInspectionRun(catalogDb, {
+          className: parsed.className,
+          status: "failed",
+          error: "screenshot_capture_not_implemented",
+          angles: parsed.angles,
+          screenshotDir,
+          resolution: parsed.resolution
+        });
+        return jsonToolResult({
+          ok: false,
+          inspectionRunId: runId,
+          screenshotDir,
+          error: { code: "screenshot_capture_not_implemented" }
+        });
+      });
+    }
+  );
+
+  server.registerTool(
+    "arma.visual.getScreenshots",
+    {
+      title: "Get Class Screenshots",
+      description: "List stored screenshot metadata for one catalog class.",
+      inputSchema: catalogClassToolSchema.shape
+    },
+    async (input) => {
+      const parsed = catalogClassToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => jsonToolResult({ screenshots: listClassScreenshots(catalogDb, parsed.className) }));
+    }
+  );
+
+  server.registerTool(
+    "arma.visual.addTag",
+    {
+      title: "Add Visual Tag",
+      description: "Manually add a visual tag to a catalog class and update FTS.",
+      inputSchema: visualAddTagToolSchema.shape
+    },
+    async (input) => {
+      const parsed = visualAddTagToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => {
+        addCatalogVisualTag(catalogDb, {
+          className: parsed.className,
+          tag: parsed.tag,
+          confidence: parsed.confidence,
+          source: parsed.source
+        });
+        return jsonToolResult({ ok: true, className: parsed.className, tag: parsed.tag });
+      });
+    }
+  );
+
+  server.registerTool(
+    "arma.visual.findByVisualTags",
+    {
+      title: "Find By Visual Tags",
+      description: "Search catalog classes by stored visual tags.",
+      inputSchema: z.object({ visual_tags: z.array(z.string().min(1)).min(1).max(20), limit: z.number().int().positive().max(100).default(25) }).shape
+    },
+    async (input) => {
+      const parsed = z
+        .object({ visual_tags: z.array(z.string().min(1)).min(1).max(20), limit: z.number().int().positive().max(100).default(25) })
+        .parse(input);
+      return withCatalogDb((catalogDb) =>
+        jsonToolResult({ results: searchCatalogClasses(catalogDb, { visualTags: parsed.visual_tags, limit: parsed.limit }) })
+      );
+    }
+  );
+}
+
+function registerCompositionCatalogTools(server: McpServer): void {
+  server.registerTool(
+    "arma.catalog.recommend",
+    {
+      title: "Recommend Catalog Assets",
+      description: "Recommend cached catalog assets by role/tag text.",
+      inputSchema: catalogRoleToolSchema.shape
+    },
+    async (input) => {
+      const parsed = catalogRoleToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => jsonToolResult({ results: searchCatalogClasses(catalogDb, { query: parsed.role, limit: parsed.limit }) }));
+    }
+  );
+
+  server.registerTool(
+    "arma.catalog.findByRole",
+    {
+      title: "Find Catalog Assets By Role",
+      description: "Find cached assets by role or tag.",
+      inputSchema: catalogRoleToolSchema.shape
+    },
+    async (input) => {
+      const parsed = catalogRoleToolSchema.parse(input);
+      return withCatalogDb((catalogDb) =>
+        jsonToolResult({ results: searchCatalogClasses(catalogDb, { query: parsed.role, tags: [parsed.role], limit: parsed.limit }) })
+      );
+    }
+  );
+
+  server.registerTool(
+    "arma.catalog.findSimilar",
+    {
+      title: "Find Similar Catalog Assets",
+      description: "Find assets sharing kind and tags with a cached class.",
+      inputSchema: findSimilarToolSchema.shape
+    },
+    async (input) => {
+      const parsed = findSimilarToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => {
+        const catalogClass = getCatalogClass(catalogDb, parsed.className);
+        if (!catalogClass) {
+          return jsonToolResult({ results: [] });
+        }
+        const tags = Array.isArray(catalogClass.tags) ? catalogClass.tags.map(String).slice(0, 3) : [];
+        return jsonToolResult({
+          results: searchCatalogClasses(catalogDb, { kind: String(catalogClass.kind ?? ""), tags, limit: parsed.limit }).filter(
+            (item) => item.class_name !== parsed.className
+          )
+        });
+      });
+    }
+  );
+
+  server.registerTool(
+    "arma.catalog.findByDimensions",
+    {
+      title: "Find Catalog Assets By Dimensions",
+      description: "Find measured assets within dimension ranges.",
+      inputSchema: findByDimensionsToolSchema.shape
+    },
+    async (input) => {
+      const parsed = findByDimensionsToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => jsonToolResult({ results: findCatalogByDimensions(catalogDb, parsed) }));
+    }
+  );
+
+  server.registerTool(
+    "arma.composition.plan",
+    {
+      title: "Plan Composition",
+      description: "Create a data-only composition plan from cached classes; does not apply anything to Eden.",
+      inputSchema: compositionPlanToolSchema.shape
+    },
+    async (input) => {
+      const parsed = compositionPlanToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => {
+        const classNames =
+          parsed.classes && parsed.classes.length > 0
+            ? parsed.classes
+            : searchCatalogClasses(catalogDb, { query: parsed.role, limit: 10 }).map((item) => String(item.class_name));
+        return jsonToolResult({ plan: createDataOnlyCompositionPlan(parsed.name, classNames, parsed.anchor) });
+      });
+    }
+  );
+
+  server.registerTool(
+    "arma.composition.previewLocal",
+    {
+      title: "Preview Composition Locally",
+      description: "Return the composition plan as a non-applying local preview payload.",
+      inputSchema: compositionExportToolSchema.shape
+    },
+    async (input) => jsonToolResult({ ok: true, previewOnly: true, plan: compositionExportToolSchema.parse(input).plan })
+  );
+
+  server.registerTool(
+    "arma.composition.exportSqf",
+    {
+      title: "Export Composition SQF",
+      description: "Export a data-only composition plan as SQF text without running it.",
+      inputSchema: compositionExportToolSchema.shape
+    },
+    async (input) => jsonToolResult({ sqf: exportPlanSqf(compositionExportToolSchema.parse(input).plan) })
+  );
+
+  server.registerTool(
+    "arma.composition.exportEdenInstructions",
+    {
+      title: "Export Eden Instructions",
+      description: "Export human-readable Eden placement instructions from a data-only composition plan.",
+      inputSchema: compositionExportToolSchema.shape
+    },
+    async (input) => jsonToolResult({ instructions: exportEdenInstructions(compositionExportToolSchema.parse(input).plan) })
+  );
+}
+
+async function measureCatalogClass(
+  catalogDb: ReturnType<typeof openCatalogDb>,
+  state: ArmaMcpState,
+  className: string,
+  force: boolean,
+  timeoutMs: number
+): Promise<Record<string, unknown>> {
+  const catalogClass = getCatalogClass(catalogDb, className);
+  if (!catalogClass) {
+    return { className, status: "failed", error: "class_not_in_catalog" };
+  }
+  if (!force && !isSafeToMeasure(catalogClass)) {
+    writeClassMeasurement(catalogDb, className, {
+      status: "skipped",
+      error: "class_not_safe_to_measure_without_force"
+    });
+    return { className, status: "skipped", error: "class_not_safe_to_measure_without_force" };
+  }
+
+  const result = await dispatchCatalogAction(state, "catalog.measureClass", { className }, timeoutMs);
+  const payload = asRecord(result.result);
+  const measurement = asRecord(payload.measurement ?? payload);
+  const status = payload.status === "failed" || measurement.status === "failed" ? "failed" : "measured";
+  writeClassMeasurement(catalogDb, className, {
+    status,
+    error: stringOrNull(payload.error ?? measurement.error),
+    bboxMin: vectorOrNull(measurement.bbox_min ?? measurement.bboxMin),
+    bboxMax: vectorOrNull(measurement.bbox_max ?? measurement.bboxMax),
+    center: vectorOrNull(measurement.center),
+    widthM: numberOrNull(measurement.width_m ?? measurement.widthM),
+    depthM: numberOrNull(measurement.depth_m ?? measurement.depthM),
+    heightM: numberOrNull(measurement.height_m ?? measurement.heightM),
+    sizeOf: numberOrNull(measurement.size_of ?? measurement.sizeOf)
+  });
+  return { className, status, measurement };
+}
+
+function isSafeToMeasure(catalogClass: Record<string, unknown>): boolean {
+  const kind = String(catalogClass.kind ?? "");
+  const subkind = String(catalogClass.subkind ?? "");
+  const scope = typeof catalogClass.scope === "number" ? catalogClass.scope : Number(catalogClass.scope ?? 1);
+  const modelPath = String(catalogClass.model_path ?? "");
+  if (scope <= 0 || !modelPath) {
+    return false;
+  }
+  if (["unit", "vehicle", "ammo", "module"].includes(kind)) {
+    return false;
+  }
+  return ["prop", "structure", "fortification", "supply", "decor"].includes(kind) || ["terminal", "console"].includes(subkind);
+}
+
+function enrichEdenResult(catalogDb: ReturnType<typeof openCatalogDb>, input: unknown): Record<string, unknown> {
+  const payload = asRecord(input);
+  if (Array.isArray(payload.entities)) {
+    return { ...payload, entities: payload.entities.map((entity) => enrichEdenEntity(catalogDb, asRecord(entity))) };
+  }
+  if (payload.snapshot) {
+    return { ...payload, snapshot: enrichEdenEntity(catalogDb, asRecord(payload.snapshot)) };
+  }
+  return payload;
+}
+
+function enrichEdenEntity(catalogDb: ReturnType<typeof openCatalogDb>, entity: Record<string, unknown>): Record<string, unknown> {
+  const className = String(entity.className ?? entity.class_name ?? "");
+  if (!className) {
+    return entity;
+  }
+  const catalogClass = getCatalogClass(catalogDb, className);
+  if (!catalogClass) {
+    return entity;
+  }
+  return {
+    ...entity,
+    catalog: {
+      kind: catalogClass.kind ?? null,
+      subkind: catalogClass.subkind ?? null,
+      tags: catalogClass.tags ?? [],
+      dimensions:
+        catalogClass.width_m === null || catalogClass.depth_m === null || catalogClass.height_m === null
+          ? null
+          : {
+              width_m: catalogClass.width_m,
+              depth_m: catalogClass.depth_m,
+              height_m: catalogClass.height_m
+            },
+      source_mod: catalogClass.source_mod_guess ?? null,
+      editor_category: catalogClass.editor_category ?? null,
+      editor_subcategory: catalogClass.editor_subcategory ?? null
+    }
+  };
+}
+
+function safePathSegment(input: string): string {
+  return input.replace(/[^A-Za-z0-9_.-]+/g, "_").slice(0, 160) || "class";
+}
+
+function createDataOnlyCompositionPlan(name: string, classNames: string[], anchor: { positionATL: [number, number, number]; dir: number }) {
+  return {
+    schemaVersion: 1,
+    name,
+    dryRun: true,
+    anchor,
+    operations: classNames.map((className, index) => ({
+      op: "create_entity",
+      clientRef: `catalog_${index + 1}`,
+      type: "Object",
+      className,
+      transform: {
+        positionATL: [index * 2, 0, 0],
+        dir: 0
+      }
+    }))
+  };
+}
+
+function exportPlanSqf(plan: Record<string, unknown>): string {
+  const operations = Array.isArray(plan.operations) ? plan.operations.map(asRecord) : [];
+  return operations
+    .filter((operation) => operation.op === "create_entity" && operation.className)
+    .map((operation) => {
+      const transform = asRecord(operation.transform);
+      const position = Array.isArray(transform.positionATL) ? transform.positionATL : [0, 0, 0];
+      const dir = typeof transform.dir === "number" ? transform.dir : 0;
+      return `private _obj = createVehicle [${JSON.stringify(operation.className)}, ${JSON.stringify(position)}, [], 0, "CAN_COLLIDE"]; _obj setDir ${dir};`;
+    })
+    .join("\n");
+}
+
+function exportEdenInstructions(plan: Record<string, unknown>): string[] {
+  const operations = Array.isArray(plan.operations) ? plan.operations.map(asRecord) : [];
+  return operations.map((operation, index) => {
+    const transform = asRecord(operation.transform);
+    return `${index + 1}. Place ${String(operation.className ?? "unknown class")} at ${JSON.stringify(transform.positionATL ?? [0, 0, 0])} facing ${String(transform.dir ?? 0)} degrees.`;
+  });
+}
+
 async function withCatalogDb<T>(callback: (catalogDb: ReturnType<typeof openCatalogDb>) => T | Promise<T>): Promise<T> {
   const catalogDb = openCatalogDb();
   try {
@@ -766,6 +1336,20 @@ function asRecord(input: unknown): Record<string, unknown> {
 
 function stringOrNull(input: unknown): string | null {
   return typeof input === "string" ? input : null;
+}
+
+function numberOrNull(input: unknown): number | null {
+  return typeof input === "number" && Number.isFinite(input) ? input : null;
+}
+
+function vectorOrNull(input: unknown): [number, number, number] | null {
+  if (!Array.isArray(input) || input.length < 3) {
+    return null;
+  }
+  const vector = input.slice(0, 3);
+  return vector.every((item) => typeof item === "number" && Number.isFinite(item))
+    ? (vector as [number, number, number])
+    : null;
 }
 
 function registerLocalGeneratorTool<T extends z.ZodObject<z.ZodRawShape>>(
