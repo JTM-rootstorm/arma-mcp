@@ -40,7 +40,18 @@ class CfgFunctions {
             class resolveEntity {};
             class sampleTerrainArea {};
             class searchClasses {};
+            class startEdenBridge {};
             class validateBatch {};
+        };
+    };
+};
+
+class Cfg3DEN {
+    class EventHandlers {
+        class AMCP {
+            onMissionLoad = "[] call AMCP_fnc_startEdenBridge";
+            onMissionNew = "[] call AMCP_fnc_startEdenBridge";
+            onMissionPreviewEnd = "[] call AMCP_fnc_startEdenBridge";
         };
     };
 };
