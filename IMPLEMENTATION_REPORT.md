@@ -100,7 +100,7 @@ hemtt dev
 ## Eden Manual Test
 
 1. Build the sidecar and addon.
-2. Set the same `ARMA_MCP_TOKEN` for the sidecar and Arma extension environment.
+2. Set `ARMA_MCP_TOKEN` for the sidecar and put the same token in the local mod's `ArmaMCP.ini`.
 3. Place `ArmaMCP_x64.dll` where Arma can load it under Proton/Windows.
 4. Start Codex with the MCP sidecar.
 5. Open Eden with the addon loaded.
@@ -115,7 +115,7 @@ hemtt dev
 
 - No in-game Eden smoke test was possible from this environment.
 - Marker creation needs live Eden verification.
-- The extension currently reads token/host/port from environment variables only.
+- The extension reads token/host/port from a local `ArmaMCP.ini` beside the extension, with environment variables as a fallback.
 - No asset index or mesh validation exists yet.
 - No remote ChatGPT bridge, raw SQF tool, public server control, or destructive editor operations are included.
 

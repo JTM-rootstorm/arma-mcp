@@ -10,11 +10,24 @@ Supported verbs:
 - `postResult:<json>`
 - `postEvent:<json>`
 
-Environment variables:
+Preferred local mod configuration:
+
+Create `ArmaMCP.ini` next to `ArmaMCP_x64.dll` in the local mod folder:
+
+```ini
+host=127.0.0.1
+port=38473
+token=replace-with-local-token
+```
+
+Environment fallback:
 
 - `ARMA_MCP_HOST`, default `127.0.0.1`
 - `ARMA_MCP_PORT`, default `38473`
-- `ARMA_MCP_TOKEN`, required for `/bridge/*` endpoints
+- `ARMA_MCP_TOKEN`, required for `/bridge/*` endpoints if `ArmaMCP.ini` is absent
+
+If both are present, `ArmaMCP.ini` wins for values it defines. Do not commit a real
+`ArmaMCP.ini` containing a token.
 
 Linux build:
 

@@ -3,8 +3,15 @@ dist/
 build/
 *.log
 *.tmp
+*.aux
+*.fdb_latexmk
+*.fls
+*.out
+.latexmkrc
 .hemttprivatekey
 .biprivatekey
+ArmaMCP.ini
+**/ArmaMCP.ini
 
 sidecar/node_modules/
 sidecar/dist/

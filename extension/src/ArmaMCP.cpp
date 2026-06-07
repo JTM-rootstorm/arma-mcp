@@ -1,17 +1,23 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <winsock2.h>
+#include <windows.h>
 #include <ws2tcpip.h>
 using socket_handle = SOCKET;
 constexpr socket_handle invalid_socket_handle = INVALID_SOCKET;
@@ -21,6 +27,7 @@ static void close_socket(socket_handle socket) { closesocket(socket); }
 #else
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <dlfcn.h>
 #include <netinet/in.h>
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -49,6 +56,73 @@ struct HttpResponse {
     std::string error;
 };
 
+std::string trim(std::string value) {
+    auto not_space = [](unsigned char character) { return std::isspace(character) == 0; };
+    value.erase(value.begin(), std::find_if(value.begin(), value.end(), not_space));
+    value.erase(std::find_if(value.rbegin(), value.rend(), not_space).base(), value.end());
+    return value;
+}
+
+std::string dirname_of(const std::string &path) {
+    const size_t slash = path.find_last_of("/\\");
+    if (slash == std::string::npos) {
+        return ".";
+    }
+    return path.substr(0, slash);
+}
+
+std::string module_directory() {
+#ifdef _WIN32
+    char path[MAX_PATH] = {};
+    HMODULE module = nullptr;
+    if (GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(&module_directory),
+            &module
+        ) &&
+        GetModuleFileNameA(module, path, static_cast<DWORD>(sizeof(path))) > 0) {
+        return dirname_of(path);
+    }
+#else
+    Dl_info info{};
+    if (dladdr(reinterpret_cast<void *>(&module_directory), &info) != 0 && info.dli_fname != nullptr) {
+        return dirname_of(info.dli_fname);
+    }
+#endif
+    return ".";
+}
+
+void apply_config_file(Config &config, const std::string &path) {
+    std::ifstream input(path);
+    if (!input) {
+        return;
+    }
+
+    std::string line;
+    while (std::getline(input, line)) {
+        line = trim(line);
+        if (line.empty() || line[0] == '#' || line[0] == ';') {
+            continue;
+        }
+
+        const size_t separator = line.find('=');
+        if (separator == std::string::npos) {
+            continue;
+        }
+
+        const std::string key = trim(line.substr(0, separator));
+        const std::string value = trim(line.substr(separator + 1));
+
+        if (key == "host" && !value.empty()) {
+            config.host = value;
+        } else if (key == "port" && !value.empty()) {
+            config.port = std::max(1, std::atoi(value.c_str()));
+        } else if (key == "token") {
+            config.token = value;
+        }
+    }
+}
+
 Config read_config() {
     Config config;
     if (const char *host = std::getenv("ARMA_MCP_HOST")) {
@@ -60,6 +134,7 @@ Config read_config() {
     if (const char *token = std::getenv("ARMA_MCP_TOKEN")) {
         config.token = token;
     }
+    apply_config_file(config, module_directory() + "/ArmaMCP.ini");
     return config;
 }
 

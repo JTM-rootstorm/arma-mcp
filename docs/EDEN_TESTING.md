@@ -25,12 +25,12 @@ hemtt build
 ./scripts/build-extension.sh
 ```
 
-5. Make `ArmaMCP_x64.dll` available to Arma under Proton/Windows and ensure the Arma process can see:
+5. Make `ArmaMCP_x64.dll` available to Arma under Proton/Windows and create `ArmaMCP.ini` next to it:
 
-```bash
-ARMA_MCP_TOKEN=dev-token
-ARMA_MCP_HOST=127.0.0.1
-ARMA_MCP_PORT=38473
+```ini
+host=127.0.0.1
+port=38473
+token=dev-token
 ```
 
 6. Launch Arma with the addon loaded, open Eden, place an object or game logic, and select it.

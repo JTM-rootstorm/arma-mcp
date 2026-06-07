@@ -1,0 +1,376 @@
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{fancyvrb}
+\usepackage{titlesec}
+
+\geometry{margin=1in}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!60!black,
+  urlcolor=blue!60!black,
+  pdftitle={ArmaMCP Initial Setup and Activation Guide},
+  pdfauthor={ArmaMCP}
+}
+
+\setlist[itemize]{leftmargin=1.4em}
+\setlist[enumerate]{leftmargin=1.6em}
+\titleformat{\section}{\Large\bfseries}{\thesection}{0.7em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.7em}{}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\projectroot}{\code{/home/mike/Documents/Programming/arma-mcp}}
+
+\DefineVerbatimEnvironment{commandblock}{Verbatim}{
+  fontsize=\small,
+  frame=single,
+  framerule=0.3pt,
+  framesep=6pt
+}
+
+\title{ArmaMCP Initial Setup and Activation Guide}
+\author{ArmaMCP MVP}
+\date{June 7, 2026}
+
+\begin{document}
+\maketitle
+
+\section{Purpose}
+
+ArmaMCP connects Codex to Arma 3 Eden Editor through a local Model Context Protocol
+(MCP) sidecar, a localhost HTTP bridge, a native Arma extension, and a HEMTT-built
+SQF addon.
+
+\begin{commandblock}
+Codex MCP client
+  -> TypeScript stdio sidecar
+  -> 127.0.0.1 HTTP bridge
+  -> ArmaMCP_x64 native extension
+  -> SQF Eden addon
+\end{commandblock}
+
+The MVP activation path lets Codex ping the sidecar, request Eden selection
+snapshots, generate a dry-run checkpoint plan, queue a reviewed plan, and inspect
+bridge events from Eden.
+
+\section{Safety Model}
+
+ArmaMCP is local-first by design.
+
+\begin{itemize}
+  \item The HTTP bridge binds to \code{127.0.0.1} by default.
+  \item Bridge endpoints under \code{/bridge/*} require \code{Authorization: Bearer <ARMA\_MCP\_TOKEN>}.
+  \item The sidecar token is supplied with the \code{ARMA\_MCP\_TOKEN} environment variable.
+  \item The Arma extension reads the matching token from \code{ArmaMCP.ini} next to the loaded extension.
+  \item No OpenAI keys or durable secrets should be placed in SQF, PBOs, mission files,
+        extension source, compiled binaries, or committed config files.
+  \item The MVP exposes no raw SQF execution tool, no shell execution, no remote execution,
+        and no public multiplayer server control.
+  \item Queued editor plans are restricted to structured \code{createObject} and
+        \code{createMarker} operations.
+\end{itemize}
+
+\section{Prerequisites}
+
+\begin{itemize}
+  \item Node.js and npm for the TypeScript sidecar.
+  \item HEMTT on \code{PATH} for the Arma addon build.
+  \item CMake and a C++17 compiler for the native Linux extension build.
+  \item \code{x86\_64-w64-mingw32-g++} if building the Windows/Proton DLL locally.
+  \item Arma 3 installed. The local Arma 3 Tools path assumed by the project is:
+\end{itemize}
+
+\begin{commandblock}
+/mnt/game_one/SteamLibrary/steamapps/common/Arma 3 Tools/
+\end{commandblock}
+
+\section{Repository Layout}
+
+The relevant project paths are:
+
+\begin{itemize}
+  \item \projectroot{}: repository root.
+  \item \code{sidecar/}: TypeScript MCP server and HTTP bridge.
+  \item \code{addons/main/}: HEMTT addon and Eden SQF functions.
+  \item \code{extension/}: native \code{ArmaMCP\_x64} extension source.
+  \item \code{scripts/build-extension.sh}: native extension build helper.
+  \item \code{scripts/validate.sh}: full local validation helper.
+\end{itemize}
+
+\section{Build The Sidecar}
+
+From the repository root:
+
+\begin{commandblock}
+cd /home/mike/Documents/Programming/arma-mcp/sidecar
+npm install
+npm run build
+\end{commandblock}
+
+To run the sidecar tests:
+
+\begin{commandblock}
+cd /home/mike/Documents/Programming/arma-mcp/sidecar
+npm run validate
+\end{commandblock}
+
+The test suite opens temporary \code{127.0.0.1} ports. If a sandbox blocks local
+binding, the HTTP tests can fail with \code{listen EPERM}; run them in an
+environment that permits loopback binding.
+
+\section{Choose A Local Bridge Token}
+
+Pick a local token and keep it out of git. For example:
+
+\begin{commandblock}
+export ARMA_MCP_TOKEN='replace-with-a-local-random-token'
+\end{commandblock}
+
+Use the same token for:
+
+\begin{itemize}
+  \item the sidecar process;
+  \item the Codex MCP server configuration;
+  \item the local mod folder's \code{ArmaMCP.ini}.
+\end{itemize}
+
+For quick local-only smoke tests, documentation examples use \code{dev-token}, but
+that value is only a placeholder.
+
+\section{Configure Codex MCP}
+
+First build the sidecar:
+
+\begin{commandblock}
+cd /home/mike/Documents/Programming/arma-mcp/sidecar
+npm run build
+\end{commandblock}
+
+Add this server entry to Codex \code{config.toml}, replacing the token with your
+local value:
+
+\begin{commandblock}
+[mcp_servers.arma-mcp]
+command = "node"
+args = ["/home/mike/Documents/Programming/arma-mcp/sidecar/dist/index.js"]
+env = { ARMA_MCP_TOKEN = "replace-with-a-local-random-token" }
+startup_timeout_sec = 10
+tool_timeout_sec = 60
+\end{commandblock}
+
+Alternatively, register it with the Codex CLI:
+
+\begin{commandblock}
+codex mcp add arma-mcp \
+  --env ARMA_MCP_TOKEN=replace-with-a-local-random-token \
+  -- node /home/mike/Documents/Programming/arma-mcp/sidecar/dist/index.js
+\end{commandblock}
+
+After starting Codex, inspect MCP servers with:
+
+\begin{commandblock}
+/mcp
+\end{commandblock}
+
+Expected result: \code{arma-mcp} is listed and its tools are available.
+
+\section{Run The Bridge Without Codex}
+
+For bridge-only development:
+
+\begin{commandblock}
+cd /home/mike/Documents/Programming/arma-mcp/sidecar
+ARMA_MCP_TOKEN=dev-token npm run dev:http
+\end{commandblock}
+
+This starts only the HTTP bridge. Normal MCP mode should be launched by Codex and
+keeps MCP traffic on stdout while logs go to stderr.
+
+\section{Build The Native Extension}
+
+From the repository root:
+
+\begin{commandblock}
+cd /home/mike/Documents/Programming/arma-mcp
+./scripts/build-extension.sh
+\end{commandblock}
+
+Expected generated files:
+
+\begin{itemize}
+  \item \code{extension/build/ArmaMCP\_x64.so}
+  \item \code{extension/build/ArmaMCP\_x64.dll}, when MinGW is available
+\end{itemize}
+
+The generated build directory is ignored by git.
+
+\subsection{Proton Path}
+
+For Arma 3 running under Proton:
+
+\begin{commandblock}
+Arma 3 Windows executable under Proton
+  -> loads ArmaMCP_x64.dll
+  -> talks to native Linux sidecar over 127.0.0.1
+\end{commandblock}
+
+Use the Windows DLL for client-side Eden testing under Proton. The native Linux
+\code{.so} is useful for local smoke testing and future native server work, but it
+is not the first Proton client path.
+
+\section{Build The HEMTT Addon}
+
+From the repository root:
+
+\begin{commandblock}
+cd /home/mike/Documents/Programming/arma-mcp
+hemtt build
+\end{commandblock}
+
+For a development deploy:
+
+\begin{commandblock}
+hemtt dev
+\end{commandblock}
+
+\code{hemtt dev} builds the addon and then tries to deploy to the local Arma 3
+installation. If the Arma installation path is not writable, the build can succeed
+while deployment fails.
+
+\section{Configure The Arma Extension}
+
+Create \code{ArmaMCP.ini} next to \code{ArmaMCP\_x64.dll} in the local mod folder:
+
+\begin{commandblock}
+@ArmaMCP/
+  ArmaMCP_x64.dll
+  ArmaMCP.ini
+  addons/amcp_main.pbo
+\end{commandblock}
+
+The config file format is:
+
+For a simple local smoke test:
+
+\begin{commandblock}
+host=127.0.0.1
+port=38473
+token=dev-token
+\end{commandblock}
+
+The important rule is that the extension config file and sidecar use the same token.
+Environment variables \code{ARMA\_MCP\_HOST}, \code{ARMA\_MCP\_PORT}, and
+\code{ARMA\_MCP\_TOKEN} remain available as fallback settings when
+\code{ArmaMCP.ini} is absent.
+
+\section{Initial Eden Activation Test}
+
+\begin{enumerate}
+  \item Build the sidecar with \code{npm run build}.
+  \item Configure Codex MCP with the \code{arma-mcp} sidecar.
+  \item Build the native extension with \code{./scripts/build-extension.sh}.
+  \item Build the addon with \code{hemtt build} or deploy with \code{hemtt dev}.
+  \item Make \code{ArmaMCP\_x64.dll} available where Arma can load it.
+  \item Create \code{ArmaMCP.ini} beside the DLL with the same token as the sidecar.
+  \item Launch Arma with the addon loaded and open Eden.
+  \item Place a simple object or game logic and select it.
+  \item In Codex, call \code{arma\_ping}.
+  \item Call \code{arma\_request\_editor\_snapshot}.
+  \item Wait for Eden to poll, then call \code{arma\_get\_editor\_snapshot}.
+  \item Call \code{arma\_generate\_checkpoint\_plan}.
+  \item Review the returned dry-run JSON.
+  \item Set \code{dryRun=false} only after review, then call \code{arma\_queue\_apply\_plan}.
+  \item Call \code{arma\_get\_bridge\_events} and inspect the result.
+  \item Confirm Eden creates objects around the selected anchor.
+  \item Press undo in Eden to confirm the operation rolls back if
+        \code{collect3DENHistory} grouped changes successfully.
+\end{enumerate}
+
+\section{Available MCP Tools}
+
+\begin{itemize}
+  \item \code{arma\_ping}: check sidecar, bridge, Eden connection, and pending commands.
+  \item \code{arma\_request\_editor\_snapshot}: queue a selection or all-objects snapshot request.
+  \item \code{arma\_get\_editor\_snapshot}: return the latest stored Eden snapshot.
+  \item \code{arma\_generate\_checkpoint\_plan}: generate a dry-run checkpoint plan.
+  \item \code{arma\_queue\_apply\_plan}: queue a reviewed structured plan for Eden.
+  \item \code{arma\_get\_bridge\_events}: inspect recent bridge events and Eden results.
+\end{itemize}
+
+\section{Troubleshooting}
+
+\subsection{Codex Does Not List \code{arma-mcp}}
+
+\begin{itemize}
+  \item Confirm \code{sidecar/dist/index.js} exists.
+  \item Confirm the Codex MCP config path is absolute and points to this repo.
+  \item Confirm \code{ARMA\_MCP\_TOKEN} is set in the MCP server environment.
+  \item Check sidecar stderr logs.
+\end{itemize}
+
+\subsection{\code{arma\_ping} Works But Eden Is Not Connected}
+
+\begin{itemize}
+  \item Confirm Arma is running with the addon loaded.
+  \item Confirm the native extension is available to Arma as \code{ArmaMCP\_x64.dll}
+        for Proton/Windows.
+  \item Confirm \code{ArmaMCP.ini} sits beside \code{ArmaMCP\_x64.dll}.
+  \item Confirm \code{ArmaMCP.ini} uses the same token as the sidecar.
+  \item Confirm the sidecar is listening on \code{127.0.0.1:38473}.
+\end{itemize}
+
+\subsection{HEMTT Build Or Deploy Fails}
+
+\begin{itemize}
+  \item Use \code{hemtt build} to validate config and SQF compilation.
+  \item Use \code{hemtt dev} only when the Arma installation path is writable.
+  \item Deployment failures can happen after a successful PBO build.
+\end{itemize}
+
+\subsection{Extension Build Fails}
+
+\begin{itemize}
+  \item Confirm \code{cmake} and a C++17 compiler are installed.
+  \item Install \code{mingw-w64} if \code{ArmaMCP\_x64.dll} is needed locally.
+  \item The Linux \code{.so} can build even if the Windows cross-compiler is missing.
+\end{itemize}
+
+\subsection{Plan Queue Is Rejected}
+
+\begin{itemize}
+  \item \code{arma\_queue\_apply\_plan} rejects \code{dryRun=true}.
+  \item Unsupported operation types are rejected.
+  \item The MVP accepts at most 50 operations.
+  \item Only \code{createObject} and \code{createMarker} are accepted.
+\end{itemize}
+
+\section{Known MVP Limits}
+
+\begin{itemize}
+  \item Sidecar state is in-memory only.
+  \item The addon assumes current Arma 3 support for \code{fromJSON} and \code{toJSON}.
+  \item The extension reads token, host, and port from \code{ArmaMCP.ini}, with environment variables as fallback settings.
+  \item No asset index, mesh parsing, collision validation, road detection, terrain
+        sampling, or faction-aware object catalog exists yet.
+  \item Marker creation still needs live Eden verification.
+  \item BattleEye/public-server deployment, addon signing, audit logs, and admin
+        authority controls are future work.
+\end{itemize}
+
+\section{One-Command Validation}
+
+After local prerequisites are installed:
+
+\begin{commandblock}
+cd /home/mike/Documents/Programming/arma-mcp
+./scripts/validate.sh
+\end{commandblock}
+
+This runs sidecar validation, extension build, HEMTT build, and git proof commands.
+
+\end{document}

@@ -57,7 +57,7 @@ See [docs/CODEX_MCP_CONFIG.md](docs/CODEX_MCP_CONFIG.md).
 
 ## Eden Test
 
-1. Set `ARMA_MCP_TOKEN` in the sidecar environment and in the Arma/extension environment.
+1. Set `ARMA_MCP_TOKEN` in the sidecar environment and put the same token in the local mod's `ArmaMCP.ini`.
 2. Start the sidecar through Codex MCP or `node sidecar/dist/index.js`.
 3. Build/load the addon with HEMTT.
 4. Open Eden and select an object.

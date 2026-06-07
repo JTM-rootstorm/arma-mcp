@@ -6,7 +6,7 @@ Defaults:
 
 - HTTP bridge binds to `127.0.0.1`.
 - `/bridge/*` endpoints require bearer-token auth.
-- Token source is `ARMA_MCP_TOKEN`.
+- Sidecar token source is `ARMA_MCP_TOKEN`; the Arma extension can read the matching local token from `ArmaMCP.ini` beside the extension.
 - If no token is provided, the sidecar generates an in-memory dev token and logs it only to stderr.
 - No OpenAI keys or durable secrets belong in SQF, PBOs, mission files, extension source, compiled binaries, or committed config.
 
