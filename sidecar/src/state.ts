@@ -15,6 +15,9 @@ export type BridgeCommand =
   | { id: string; type: "applyPlan"; plan: CompositionPlan; createdAt: string }
   | ArmaMcpAction;
 
+export type SnapshotRequestCommand = Extract<BridgeCommand, { type: "requestSnapshot" }>;
+export type ApplyPlanCommand = Extract<BridgeCommand, { type: "applyPlan" }>;
+
 export type BridgeEvent = {
   id: string;
   createdAt: string;
@@ -50,7 +53,36 @@ export type AuditEvent = {
   };
 };
 
-export type ArmaMcpState = ReturnType<typeof createState>;
+export type QueuedActionInput = {
+  action: ArmaMcpActionName;
+  mode: ArmaMcpActionMode;
+  params?: Record<string, unknown>;
+  dryRun?: boolean;
+  requiresConfirmation?: boolean;
+  context?: Record<string, unknown>;
+  timeoutMs?: number;
+};
+
+export type QueuedAction = {
+  action: ArmaMcpAction;
+  result: Promise<ArmaMcpActionResult>;
+};
+
+export interface ArmaMcpState {
+  queueAction(input: QueuedActionInput): QueuedAction;
+  queueSnapshotRequest(scope?: "selection" | "all"): SnapshotRequestCommand | Promise<SnapshotRequestCommand>;
+  queueApplyPlan(plan: CompositionPlan): ApplyPlanCommand | Promise<ApplyPlanCommand>;
+  drainCommands(): BridgeCommand[];
+  pendingCommandCount(): number | Promise<number>;
+  pendingActionCount(): number | Promise<number>;
+  storeSnapshot(snapshot: IncomingEditorSnapshot): EditorSnapshot;
+  rememberBridgeEvent(type: string, message: string, payload?: unknown): BridgeEvent;
+  rememberResult(input: Omit<BridgeResult, "id" | "createdAt">): BridgeResult;
+  completeActionResult(input: unknown): BridgeResult;
+  getLastSnapshot(): EditorSnapshot | null | Promise<EditorSnapshot | null>;
+  getLastEdenSeenAt(): string | null | Promise<string | null>;
+  recentEvents(limit?: number): Array<BridgeEvent | BridgeResult | AuditEvent> | Promise<Array<BridgeEvent | BridgeResult | AuditEvent>>;
+}
 
 export function createId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
@@ -125,15 +157,7 @@ export function createState(maxEvents = 200, requestTimeoutMs = 30_000, maxPendi
   }
 
   return {
-    queueAction(input: {
-      action: ArmaMcpActionName;
-      mode: ArmaMcpActionMode;
-      params?: Record<string, unknown>;
-      dryRun?: boolean;
-      requiresConfirmation?: boolean;
-      context?: Record<string, unknown>;
-      timeoutMs?: number;
-    }) {
+    queueAction(input: QueuedActionInput) {
       if (pendingResults.size >= maxPendingRequests) {
         throw new Error(`Too many pending Arma MCP requests (${maxPendingRequests})`);
       }

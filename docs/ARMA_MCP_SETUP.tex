@@ -163,11 +163,35 @@ startup_timeout_sec = 10
 tool_timeout_sec = 60
 \end{commandblock}
 
+If Arma is already polling a separately started bridge, configure Codex to reuse
+that bridge instead of binding the HTTP listener again:
+
+\begin{commandblock}
+[mcp_servers.arma-mcp]
+command = "node"
+args = ["/path/to/arma-mcp/sidecar/dist/index.js"]
+env = {
+  ARMA_MCP_TOKEN = "replace-with-a-local-random-token",
+  ARMA_MCP_SKIP_HTTP_LISTEN = "1"
+}
+startup_timeout_sec = 10
+tool_timeout_sec = 60
+\end{commandblock}
+
 Alternatively, register it with the Codex CLI:
 
 \begin{commandblock}
 codex mcp add arma-mcp \
   --env ARMA_MCP_TOKEN=replace-with-a-local-random-token \
+  -- node /path/to/arma-mcp/sidecar/dist/index.js
+\end{commandblock}
+
+Reuse-mode helper form:
+
+\begin{commandblock}
+codex mcp add arma-mcp \
+  --env ARMA_MCP_TOKEN=replace-with-a-local-random-token \
+  --env ARMA_MCP_SKIP_HTTP_LISTEN=1 \
   -- node /path/to/arma-mcp/sidecar/dist/index.js
 \end{commandblock}
 
@@ -190,6 +214,12 @@ ARMA_MCP_TOKEN=dev-token npm run dev:http
 
 This starts only the HTTP bridge. Normal MCP mode should be launched by Codex and
 keeps MCP traffic on stdout while logs go to stderr.
+
+For local development of a Codex stdio process that reuses the running bridge:
+
+\begin{commandblock}
+ARMA_MCP_TOKEN=dev-token npm run dev:stdio-existing
+\end{commandblock}
 
 \section{Build The Native Extension}
 

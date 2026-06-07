@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
-import { editorSnapshotSchema } from "./schema.js";
-import type { ArmaMcpState } from "./state.js";
+import { compositionPlanSchema, editorSnapshotSchema } from "./schema.js";
+import type { ArmaMcpState, QueuedActionInput } from "./state.js";
 import type { Logger } from "./log.js";
 
 export type BridgeConfig = {
@@ -28,6 +28,10 @@ export function resolveBridgeConfig(env = process.env): BridgeConfig {
   };
 }
 
+export function shouldSkipHttpListen(argv = process.argv, env = process.env): boolean {
+  return argv.includes("--stdio-only-existing-bridge") || truthyEnv(env.ARMA_MCP_SKIP_HTTP_LISTEN);
+}
+
 export async function startHttpBridge(
   state: ArmaMcpState,
   logger: Logger,
@@ -35,8 +39,9 @@ export async function startHttpBridge(
 ): Promise<StartedBridge> {
   const server = createServer((request, response) => {
     handleRequest(request, response, state, config).catch((error: unknown) => {
-      logger.error("http request failed", { error: error instanceof Error ? error.message : String(error) });
-      sendJson(response, 500, { error: "internal_error" });
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error("http request failed", { error: message });
+      sendJson(response, 500, { error: "internal_error", message });
     });
   });
 
@@ -85,6 +90,11 @@ async function handleRequest(
     return;
   }
 
+  if (url.pathname.startsWith("/mcp/")) {
+    await handleMcpControlRequest(request, response, url, state);
+    return;
+  }
+
   if (request.method === "POST" && url.pathname === "/bridge/snapshot") {
     const body = await readJson(request);
     const snapshot = editorSnapshotSchema.parse(body);
@@ -119,6 +129,71 @@ async function handleRequest(
   sendJson(response, 404, { error: "not_found" });
 }
 
+async function handleMcpControlRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+  state: ArmaMcpState
+): Promise<void> {
+  if (request.method === "GET" && url.pathname === "/mcp/status") {
+    const lastSeenAt = await state.getLastEdenSeenAt();
+    sendJson(response, 200, {
+      ok: true,
+      armaConnected: lastSeenAt !== null,
+      edenAvailable: lastSeenAt !== null,
+      pendingActions: await state.pendingCommandCount(),
+      pendingResults: await state.pendingActionCount(),
+      lastSeenAt,
+      lastSnapshotAt: (await state.getLastSnapshot())?.createdAt ?? null
+    });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/mcp/actions") {
+    const body = await readJson(request);
+    const queued = state.queueAction(body as QueuedActionInput);
+    const result = await queued.result;
+    sendJson(response, 200, { ok: true, action: queued.action, result });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/mcp/snapshot-requests") {
+    const body = await readJson(request);
+    const scope = body.scope === "all" ? "all" : "selection";
+    const command = await state.queueSnapshotRequest(scope);
+    sendJson(response, 200, { ok: true, command });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/mcp/snapshot") {
+    const includeRaw = url.searchParams.get("includeRaw") === "1" || url.searchParams.get("includeRaw") === "true";
+    const snapshot = await state.getLastSnapshot();
+    if (!snapshot) {
+      sendJson(response, 200, { ok: true, snapshot: null });
+      return;
+    }
+    const { raw: _raw, ...withoutRaw } = snapshot;
+    sendJson(response, 200, { ok: true, snapshot: includeRaw ? snapshot : withoutRaw });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/mcp/apply-plans") {
+    const body = await readJson(request);
+    const plan = compositionPlanSchema.parse(body.plan);
+    const command = await state.queueApplyPlan(plan);
+    sendJson(response, 200, { ok: true, command });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/mcp/events") {
+    const limit = Number(url.searchParams.get("limit") ?? 20);
+    sendJson(response, 200, { ok: true, events: await state.recentEvents(Number.isFinite(limit) ? limit : 20) });
+    return;
+  }
+
+  sendJson(response, 404, { error: "not_found" });
+}
+
 function isAuthorized(request: IncomingMessage, token: string): boolean {
   return request.headers.authorization === `Bearer ${token}`;
 }
@@ -147,4 +222,8 @@ function sendJson(response: ServerResponse, statusCode: number, body: unknown): 
     "content-length": Buffer.byteLength(payload).toString()
   });
   response.end(payload);
+}
+
+function truthyEnv(value: string | undefined): boolean {
+  return typeof value === "string" && ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }

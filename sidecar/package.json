@@ -7,6 +7,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/index.ts",
     "dev:http": "tsx src/index.ts --http-only",
+    "dev:stdio-existing": "tsx src/index.ts --stdio-only-existing-bridge",
     "test": "vitest run",
     "validate": "npm run build && npm test"
   },

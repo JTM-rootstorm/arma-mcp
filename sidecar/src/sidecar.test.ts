@@ -30,8 +30,9 @@ import {
   writeScanManifest
 } from "./catalogDb.js";
 import { generateAaSite, generateCoverLine, generateLz, generatePropWall, generateRoadCheckpoint, generateSmallOutpost } from "./generators.js";
-import { startHttpBridge, type StartedBridge } from "./httpBridge.js";
+import { shouldSkipHttpListen, startHttpBridge, type StartedBridge } from "./httpBridge.js";
 import { logger } from "./log.js";
+import { createRemoteBridgeState } from "./remoteBridgeState.js";
 import { compositionPlanSchema } from "./schema.js";
 import { createState } from "./state.js";
 import { actionPacketSchema, schemaVersion } from "./protocol.js";
@@ -459,6 +460,12 @@ describe("procedural generators", () => {
 });
 
 describe("HTTP bridge auth", () => {
+  it("detects stdio-only existing bridge startup mode", () => {
+    expect(shouldSkipHttpListen(["node", "dist/index.js", "--stdio-only-existing-bridge"], {})).toBe(true);
+    expect(shouldSkipHttpListen(["node", "dist/index.js"], { ARMA_MCP_SKIP_HTTP_LISTEN: "true" })).toBe(true);
+    expect(shouldSkipHttpListen(["node", "dist/index.js"], { ARMA_MCP_SKIP_HTTP_LISTEN: "0" })).toBe(false);
+  });
+
   it("rejects invalid token", async () => {
     const state = createState();
     const bridge = await startHttpBridge(state, logger, {
@@ -517,5 +524,27 @@ describe("HTTP bridge auth", () => {
     });
     expect(response.status).toBe(200);
     expect(state.getLastSnapshot()?.selected).toHaveLength(1);
+  });
+
+  it("lets stdio-only MCP state reuse an existing HTTP bridge", async () => {
+    const state = createState();
+    const bridge = await startHttpBridge(state, logger, {
+      host: "127.0.0.1",
+      port: 0,
+      token: "test-token",
+      generatedToken: false
+    });
+    bridges.push(bridge);
+
+    const remoteState = createRemoteBridgeState(bridge.config);
+    const command = await remoteState.queueSnapshotRequest("all");
+    expect(command).toMatchObject({ type: "requestSnapshot", scope: "all" });
+
+    const response = await fetch(`${bridge.url}/bridge/commands`, {
+      headers: { authorization: "Bearer test-token" }
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { commands: unknown[] };
+    expect(body.commands).toMatchObject([{ id: command.id, type: "requestSnapshot", scope: "all" }]);
   });
 });

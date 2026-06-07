@@ -409,16 +409,18 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig)
       description: "Check sidecar queue and most recent Eden contact.",
       inputSchema: emptyInputSchema.shape
     },
-    async () =>
-      jsonToolResult({
+    async () => {
+      const lastSeenAt = await state.getLastEdenSeenAt();
+      return jsonToolResult({
         sidecarConnected: true,
-        armaConnected: state.getLastEdenSeenAt() !== null,
-        edenAvailable: state.getLastEdenSeenAt() !== null,
-        pendingActions: state.pendingCommandCount(),
-        pendingResults: state.pendingActionCount(),
-        lastSeenAt: state.getLastEdenSeenAt(),
+        armaConnected: lastSeenAt !== null,
+        edenAvailable: lastSeenAt !== null,
+        pendingActions: await state.pendingCommandCount(),
+        pendingResults: await state.pendingActionCount(),
+        lastSeenAt,
         httpBridge: { host: bridgeConfig.host, port: bridgeConfig.port }
-      })
+      });
+    }
   );
 
   registerActionTool(server, state, "arma.bridge.ping", "bridge.ping", "read", emptyInputSchema, "Bridge Ping");
@@ -611,17 +613,20 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig)
       description: "Check sidecar, local bridge, Eden connection, and pending command state.",
       inputSchema: {}
     },
-    async () =>
-      jsonToolResult({
+    async () => {
+      const lastSeenAt = await state.getLastEdenSeenAt();
+      const lastSnapshot = await state.getLastSnapshot();
+      return jsonToolResult({
         sidecar: "ok",
         httpBridge: { host: bridgeConfig.host, port: bridgeConfig.port },
         eden: {
-          connected: state.getLastEdenSeenAt() !== null,
-          lastSeenAt: state.getLastEdenSeenAt()
+          connected: lastSeenAt !== null,
+          lastSeenAt
         },
-        lastSnapshotAt: state.getLastSnapshot()?.createdAt ?? null,
-        pendingCommandCount: state.pendingCommandCount()
-      })
+        lastSnapshotAt: lastSnapshot?.createdAt ?? null,
+        pendingCommandCount: await state.pendingCommandCount()
+      });
+    }
   );
 
   server.registerTool(
@@ -633,7 +638,7 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig)
     },
     async (input) => {
       const parsed = requestSnapshotInputSchema.parse(input);
-      const command = state.queueSnapshotRequest(parsed.scope);
+      const command = await state.queueSnapshotRequest(parsed.scope);
       return jsonToolResult({ queued: true, commandId: command.id });
     }
   );
@@ -647,7 +652,7 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig)
     },
     async (input) => {
       const parsed = getSnapshotInputSchema.parse(input);
-      const snapshot = state.getLastSnapshot();
+      const snapshot = await state.getLastSnapshot();
       if (!snapshot) {
         return jsonToolResult({
           snapshot: null,
@@ -690,7 +695,7 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig)
       if (unsupported.length > 0) {
         throw new Error(`Unsupported MVP classname(s): ${unsupported.join(", ")}`);
       }
-      const command = state.queueApplyPlan(parsed.plan);
+      const command = await state.queueApplyPlan(parsed.plan);
       return jsonToolResult({ queued: true, commandId: command.id });
     }
   );
@@ -704,7 +709,7 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig)
     },
     async (input) => {
       const parsed = getBridgeEventsInputSchema.parse(input);
-      return jsonToolResult({ events: state.recentEvents(parsed.limit) });
+      return jsonToolResult({ events: await state.recentEvents(parsed.limit) });
     }
   );
 
