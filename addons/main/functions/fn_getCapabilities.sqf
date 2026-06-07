@@ -22,13 +22,16 @@ createHashMapFromArray [
         "eden.clear_selection",
         "eden.focus_entities",
         "eden.batch",
-        "eden.validate_plan"
+        "eden.validate_plan",
+        "eden.capture_composition",
+        "eden.apply_composition"
     ]],
     ["features", createHashMapFromArray [
         ["typedActions", true],
         ["entityRegistry", true],
         ["readSnapshots", true],
         ["writeBatch", true],
+        ["composition", true],
         ["rawSqf", false],
         ["historyGrouping", true]
     ]]

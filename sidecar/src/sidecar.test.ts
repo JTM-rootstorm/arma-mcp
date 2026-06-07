@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { generateCheckpointPlan } from "./checkpointPlanner.js";
+import { generateAaSite, generateCoverLine, generateLz, generatePropWall, generateRoadCheckpoint, generateSmallOutpost } from "./generators.js";
 import { startHttpBridge, type StartedBridge } from "./httpBridge.js";
 import { logger } from "./log.js";
 import { compositionPlanSchema } from "./schema.js";
@@ -178,6 +179,27 @@ describe("write policy", () => {
         attributes: { init: "this callExtension 'x';" }
       }).warnings
     ).toHaveLength(1);
+  });
+});
+
+describe("procedural generators", () => {
+  const generators = [
+    generateRoadCheckpoint({ anchor: { positionATL: [100, 200, 0], dir: 90 }, factionTheme: "CIS" }),
+    generateSmallOutpost({ anchor: { positionATL: [0, 0, 0], dir: 0 }, factionTheme: "CIS" }),
+    generateAaSite({ anchor: { positionATL: [0, 0, 0], dir: 0 } }),
+    generateLz({ anchor: { positionATL: [0, 0, 0], dir: 0 } }),
+    generateCoverLine({ anchor: { positionATL: [0, 0, 0], dir: 0 } }),
+    generatePropWall({ anchor: { positionATL: [0, 0, 0], dir: 0 } })
+  ];
+
+  it("returns dry-run batch plans with client refs and layers", () => {
+    for (const generated of generators) {
+      expect(generated.plan.dryRun).toBe(true);
+      expect(generated.plan.operations.length).toBeGreaterThan(0);
+      expect(generated.plan.operations.every((operation) => operation.clientRef)).toBe(true);
+      expect(generated.plan.operations.every((operation) => operation.layer)).toBe(true);
+      expect(generated.warnings.length).toBeGreaterThan(0);
+    }
   });
 });
 

@@ -3,6 +3,14 @@ import { z } from "zod";
 import type { BridgeConfig } from "./httpBridge.js";
 import { generateCheckpointPlan, validateCheckpointClasses } from "./checkpointPlanner.js";
 import {
+  generateAaSite,
+  generateCoverLine,
+  generateLz,
+  generatePropWall,
+  generateRoadCheckpoint,
+  generateSmallOutpost
+} from "./generators.js";
+import {
   confirmationSchema,
   entityTypeSchema,
   transformSchema,
@@ -141,6 +149,69 @@ const validatePlanToolSchema = z.object({
       destructive: z.boolean().default(true)
     })
     .default({ classes: true, terrain: false, water: false, bounds: false, destructive: true })
+});
+const generatorAnchorSchema = z
+  .object({
+    mode: z.string().max(40).optional(),
+    positionATL: vector3Schema.optional(),
+    dir: z.number().optional()
+  })
+  .default({});
+const roadCheckpointGeneratorSchema = z.object({
+  dryRun: z.boolean().default(true),
+  anchor: generatorAnchorSchema,
+  factionTheme: z.string().max(80).optional(),
+  size: z.enum(["small", "medium"]).default("small"),
+  features: z.record(z.string(), z.boolean()).optional()
+});
+const smallOutpostGeneratorSchema = z.object({
+  dryRun: z.boolean().default(true),
+  anchor: generatorAnchorSchema,
+  factionTheme: z.string().max(80).optional(),
+  radiusMeters: z.number().positive().max(100).default(35),
+  objective: z.string().max(120).optional(),
+  threatDirectionDeg: z.number().optional(),
+  features: z.record(z.string(), z.boolean()).optional()
+});
+const siteGeneratorSchema = z.object({
+  dryRun: z.boolean().default(true),
+  anchor: generatorAnchorSchema,
+  factionTheme: z.string().max(80).optional(),
+  radiusMeters: z.number().positive().max(100).default(30)
+});
+const lineGeneratorSchema = z.object({
+  dryRun: z.boolean().default(true),
+  anchor: generatorAnchorSchema,
+  lengthMeters: z.number().positive().max(200).default(24),
+  segmentCount: z.number().int().positive().max(30).default(6)
+});
+const captureCompositionToolSchema = z.object({
+  anchor: z
+    .object({
+      mode: z.enum(["selectionCentroid", "firstSelected"]).default("selectionCentroid")
+    })
+    .default({ mode: "selectionCentroid" }),
+  includeAttributes: z.boolean().default(true),
+  includeConnections: z.boolean().default(false),
+  includeLayers: z.boolean().default(true),
+  name: z.string().trim().min(1).max(120).default("captured-selection")
+});
+const applyCompositionToolSchema = writeBaseSchema.extend({
+  composition: z
+    .object({
+      schemaVersion: z.literal(1),
+      name: z.string().min(1).max(120),
+      entities: z.array(z.record(z.string(), z.unknown())).max(250),
+      connections: z.array(z.record(z.string(), z.unknown())).optional()
+    })
+    .passthrough(),
+  anchor: z
+    .object({
+      positionATL: vector3Schema.default([0, 0, 0]),
+      dir: z.number().default(0)
+    })
+    .default({ positionATL: [0, 0, 0], dir: 0 }),
+  layer: z.string().max(160).optional()
 });
 
 export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig): McpServer {
@@ -333,6 +404,34 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig)
     validatePlanToolSchema,
     "Validate Eden Plan"
   );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.capture_composition",
+    "eden.capture_composition",
+    "read",
+    captureCompositionToolSchema,
+    "Capture Composition"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.apply_composition",
+    "eden.apply_composition",
+    "write",
+    applyCompositionToolSchema,
+    "Apply Composition"
+  );
+  registerLocalGeneratorTool(server, "arma.eden.generate_road_checkpoint", roadCheckpointGeneratorSchema, (input) =>
+    generateRoadCheckpoint(input)
+  );
+  registerLocalGeneratorTool(server, "arma.eden.generate_small_outpost", smallOutpostGeneratorSchema, (input) =>
+    generateSmallOutpost(input)
+  );
+  registerLocalGeneratorTool(server, "arma.eden.generate_aa_site", siteGeneratorSchema, (input) => generateAaSite(input));
+  registerLocalGeneratorTool(server, "arma.eden.generate_lz", siteGeneratorSchema, (input) => generateLz(input));
+  registerLocalGeneratorTool(server, "arma.eden.generate_cover_line", lineGeneratorSchema, (input) => generateCoverLine(input));
+  registerLocalGeneratorTool(server, "arma.eden.generate_prop_wall", lineGeneratorSchema, (input) => generatePropWall(input));
 
   server.registerTool(
     "arma_ping",
@@ -439,6 +538,26 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig)
   );
 
   return server;
+}
+
+function registerLocalGeneratorTool<T extends z.ZodObject<z.ZodRawShape>>(
+  server: McpServer,
+  toolName: string,
+  inputSchema: T,
+  generate: (input: z.infer<T>) => unknown
+): void {
+  server.registerTool(
+    toolName,
+    {
+      title: toolName,
+      description: "Generate a dry-run Eden batch plan without mutating Eden.",
+      inputSchema: inputSchema.shape
+    },
+    async (input) => {
+      const parsed = inputSchema.parse(input);
+      return jsonToolResult(generate(parsed));
+    }
+  );
 }
 
 function registerActionTool<T extends z.ZodObject<z.ZodRawShape>>(

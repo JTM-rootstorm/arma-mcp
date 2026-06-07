@@ -250,6 +250,12 @@ switch (_action) do {
         private _plan = _params getOrDefault ["plan", createHashMap];
         _result = [_plan] call AMCP_fnc_validateBatch;
     };
+    case "eden.capture_composition": {
+        _result = [_params] call AMCP_fnc_captureComposition;
+    };
+    case "eden.apply_composition": {
+        _result = [_params] call AMCP_fnc_applyComposition;
+    };
     default {
         _ok = false;
         _error = createHashMapFromArray [

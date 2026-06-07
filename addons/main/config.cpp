@@ -22,6 +22,8 @@ class CfgFunctions {
             class buildEntitySnapshot {};
             class buildObjectSnapshot {};
             class callBridge {};
+            class applyComposition {};
+            class captureComposition {};
             class captureSelection {};
             class createEntity {};
             class dispatchAction {};
