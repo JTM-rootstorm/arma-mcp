@@ -13,7 +13,8 @@ if (_payload isNotEqualTo "") then {
     _command = format ["%1:%2", _verb, _payload];
 };
 
-private _result = "ArmaMCP_x64" callExtension _command;
+// Arma resolves the platform suffix, e.g. ArmaMCP_x64.dll/so, from this base name.
+private _result = "ArmaMCP" callExtension _command;
 if ((_result select [0, 4]) isEqualTo "ERR:") then {
     private _lastWarning = missionNamespace getVariable ["AMCP_lastBridgeWarningAt", -10];
     if ((time - _lastWarning) > 10) then {

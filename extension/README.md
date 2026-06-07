@@ -1,6 +1,12 @@
 # ArmaMCP Native Extension
 
-`ArmaMCP_x64` is a small `callExtension` courier for the local sidecar HTTP bridge.
+`ArmaMCP` is a small `callExtension` courier for the local sidecar HTTP bridge.
+Arma loads the physical 64-bit binary as `ArmaMCP_x64.dll` or `ArmaMCP_x64.so`,
+but SQF calls it with the base extension name:
+
+```sqf
+"ArmaMCP" callExtension "ping";
+```
 
 Supported verbs:
 
