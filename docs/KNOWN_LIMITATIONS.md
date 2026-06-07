@@ -7,4 +7,4 @@
 - The checkpoint generator uses vanilla fallback classnames.
 - Marker creation is implemented through `create3DENEntity ["Marker", ...]` and still needs an in-game Eden smoke test.
 - HEMTT `dev` may fail after successful build if it cannot deploy into the local Arma installation.
-- BattleEye/public-server deployment, addon signing, audit logs, and admin authority controls are future work.
+- BattleEye/public-server deployment, audit logs, and admin authority controls are future work.

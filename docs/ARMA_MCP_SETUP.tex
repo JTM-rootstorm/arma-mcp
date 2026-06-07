@@ -232,6 +232,16 @@ cd /home/mike/Documents/Programming/arma-mcp
 hemtt build
 \end{commandblock}
 
+For a signed local release:
+
+\begin{commandblock}
+./scripts/release-signed.sh
+\end{commandblock}
+
+This runs \code{hemtt release}, checks that the PBO has a matching \code{.bisign},
+checks that HEMTT emitted the public \code{.bikey}, and verifies the signature
+with \code{hemtt utils verify}.
+
 For a development deploy:
 
 \begin{commandblock}
@@ -358,8 +368,8 @@ Environment variables \code{ARMA\_MCP\_HOST}, \code{ARMA\_MCP\_PORT}, and
   \item No asset index, mesh parsing, collision validation, road detection, terrain
         sampling, or faction-aware object catalog exists yet.
   \item Marker creation still needs live Eden verification.
-  \item BattleEye/public-server deployment, addon signing, audit logs, and admin
-        authority controls are future work.
+  \item BattleEye/public-server deployment, audit logs, and admin authority
+        controls are future work.
 \end{itemize}
 
 \section{One-Command Validation}
@@ -371,6 +381,7 @@ cd /home/mike/Documents/Programming/arma-mcp
 ./scripts/validate.sh
 \end{commandblock}
 
-This runs sidecar validation, extension build, HEMTT build, and git proof commands.
+This runs sidecar validation, extension build, HEMTT build, signed HEMTT release
+verification, and git proof commands.
 
 \end{document}

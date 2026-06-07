@@ -26,6 +26,7 @@ Date: 2026-06-07
 - Native `ArmaMCP_x64` C++ extension source, CMake build, and build script.
 - Docs for MCP configuration, Eden testing, security, Proton/Linux notes, and known limits.
 - Validation script at `scripts/validate.sh`.
+- Signed HEMTT release validation at `scripts/release-signed.sh`.
 
 ## Builds And Checks
 

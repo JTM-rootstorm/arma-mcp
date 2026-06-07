@@ -8,3 +8,11 @@ major = 0
 minor = 1
 patch = 0
 build = 0
+
+[signing]
+authority = "arma_mcp_local_test"
+version = 3
+
+[hemtt.release]
+sign = true
+archive = false

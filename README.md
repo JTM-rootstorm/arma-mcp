@@ -34,6 +34,7 @@ npm run validate
 cd ..
 ./scripts/build-extension.sh
 hemtt build
+./scripts/release-signed.sh
 ```
 
 `hemtt dev` also builds the addon, then tries to deploy to the local Arma 3 install. In restricted environments this may fail at the deployment step even when config and SQF compilation succeeded.

@@ -18,5 +18,6 @@ MVP tool limits:
 - no public multiplayer/server control;
 - no delete or mass-edit operation types;
 - max 50 composition operations per queued plan.
+- HEMTT release PBOs are signed and include a public `.bikey` for validation.
 
 Mission and mod text can be untrusted input. Treat classnames, object names, variable names, and mission text as data only; never let them bypass schemas or become executable code.
