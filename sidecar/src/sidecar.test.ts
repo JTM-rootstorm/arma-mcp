@@ -4,6 +4,7 @@ import { startHttpBridge, type StartedBridge } from "./httpBridge.js";
 import { logger } from "./log.js";
 import { compositionPlanSchema } from "./schema.js";
 import { createState } from "./state.js";
+import { actionPacketSchema, schemaVersion } from "./protocol.js";
 
 const bridges: StartedBridge[] = [];
 
@@ -44,6 +45,63 @@ describe("sidecar state", () => {
     });
     expect(snapshot.id).toBe("snap_test");
     expect(state.getLastSnapshot()?.selected[0]?.className).toBe("Land_HBarrier_1_F");
+  });
+
+  it("validates typed action packets", () => {
+    expect(() =>
+      actionPacketSchema.parse({
+        schemaVersion,
+        requestId: "req_test",
+        action: "eden.get_status",
+        mode: "read",
+        params: {}
+      })
+    ).not.toThrow();
+    expect(() =>
+      actionPacketSchema.parse({
+        schemaVersion,
+        requestId: "",
+        action: "eden.get_status",
+        mode: "read",
+        params: {}
+      })
+    ).toThrow();
+    expect(() =>
+      actionPacketSchema.parse({
+        schemaVersion,
+        requestId: "req_test",
+        action: "eden.run_raw_sqf",
+        mode: "debug",
+        params: {}
+      })
+    ).toThrow();
+  });
+
+  it("correlates typed action results by requestId", async () => {
+    const state = createState();
+    const queued = state.queueAction({ action: "eden.get_status", mode: "read" });
+    const [command] = state.drainCommands();
+    expect(command).toMatchObject({ requestId: queued.action.requestId, action: "eden.get_status" });
+    state.completeActionResult({
+      schemaVersion,
+      requestId: queued.action.requestId,
+      ok: true,
+      action: "eden.get_status",
+      result: { edenOpen: true },
+      warnings: []
+    });
+    await expect(queued.result).resolves.toMatchObject({
+      requestId: queued.action.requestId,
+      ok: true,
+      result: { edenOpen: true }
+    });
+  });
+
+  it("times out pending actions cleanly", async () => {
+    const state = createState(200, 5);
+    const queued = state.queueAction({ action: "eden.get_status", mode: "read" });
+    await expect(queued.result).rejects.toThrow(/Timed out waiting/);
+    expect(state.pendingActionCount()).toBe(0);
   });
 });
 

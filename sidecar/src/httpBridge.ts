@@ -100,12 +100,7 @@ async function handleRequest(
 
   if (request.method === "POST" && url.pathname === "/bridge/result") {
     const body = await readJson(request);
-    const result = state.rememberResult({
-      commandId: stringOrUndefined(body.commandId),
-      ok: body.ok !== false,
-      message: typeof body.message === "string" ? body.message : "Eden posted a result",
-      payload: body
-    });
+    const result = state.completeActionResult(body);
     sendJson(response, 200, { ok: true, resultId: result.id });
     return;
   }
@@ -148,8 +143,4 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
 function sendJson(response: ServerResponse, statusCode: number, body: unknown): void {
   response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(body));
-}
-
-function stringOrUndefined(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
 }
