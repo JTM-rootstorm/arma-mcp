@@ -1,5 +1,18 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { generateCheckpointPlan } from "./checkpointPlanner.js";
+import {
+  closeCatalogDb,
+  ensureCatalogSchema,
+  getLatestScanManifest,
+  openCatalogDb,
+  upsertCatalogClass,
+  upsertClassTags,
+  updateFtsIndex,
+  writeScanManifest
+} from "./catalogDb.js";
 import { generateAaSite, generateCoverLine, generateLz, generatePropWall, generateRoadCheckpoint, generateSmallOutpost } from "./generators.js";
 import { startHttpBridge, type StartedBridge } from "./httpBridge.js";
 import { logger } from "./log.js";
@@ -9,11 +22,84 @@ import { actionPacketSchema, schemaVersion } from "./protocol.js";
 import { enforceToolPolicy } from "./policy.js";
 
 const bridges: StartedBridge[] = [];
+const tempDirs: string[] = [];
 
 afterEach(async () => {
   while (bridges.length > 0) {
     await bridges.pop()?.close();
   }
+  while (tempDirs.length > 0) {
+    rmSync(tempDirs.pop()!, { recursive: true, force: true });
+  }
+});
+
+describe("catalog database", () => {
+  function tempCatalogPath() {
+    const dir = mkdtempSync(join(tmpdir(), "arma-mcp-catalog-"));
+    tempDirs.push(dir);
+    return join(dir, ".mcp-cache", "arma", "catalog.sqlite");
+  }
+
+  it("creates the schema idempotently and stores catalog rows", () => {
+    const catalog = openCatalogDb(tempCatalogPath());
+    try {
+      ensureCatalogSchema(catalog);
+      ensureCatalogSchema(catalog);
+
+      const tables = catalog.db
+        .prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'virtual') ORDER BY name")
+        .all()
+        .map((row) => String((row as { name: string }).name));
+      expect(tables).toContain("classes");
+      expect(tables).toContain("classes_fts");
+      expect(tables).toContain("class_screenshots");
+      expect(tables).toContain("class_visual_tags");
+
+      writeScanManifest(catalog, {
+        scanId: "scan_test",
+        loadedModsHash: "mods",
+        loadedAddonsHash: "addons",
+        classCounts: { CfgVehicles: 1 },
+        status: "complete",
+        finishedAt: "2026-06-07T00:00:00.000Z"
+      });
+
+      upsertCatalogClass(catalog, {
+        className: "Land_Republic_Terminal_F",
+        latestScanId: "scan_test",
+        configPath: "CfgVehicles",
+        displayName: "Republic Terminal",
+        kind: "prop",
+        subkind: "terminal",
+        editorCategory: "EdCat_Structures",
+        editorSubcategory: "EdSubcat_Electronics",
+        faction: "BLU_F",
+        modelPath: "\\a3\\props_f\\terminal.p3d",
+        tags: ["terminal", "republic"],
+        rawConfig: { scope: 2 }
+      });
+      upsertClassTags(catalog, "Land_Republic_Terminal_F", [
+        { tag: "terminal", confidence: 0.9 },
+        { tag: "console", source: "heuristic", confidence: 0.75 }
+      ]);
+      updateFtsIndex(catalog, "Land_Republic_Terminal_F");
+
+      const manifest = getLatestScanManifest(catalog);
+      expect(manifest).toMatchObject({ scanId: "scan_test", status: "complete" });
+      const matches = catalog.db
+        .prepare(
+          `SELECT classes.class_name AS className, classes.display_name AS displayName
+           FROM classes_fts
+           JOIN classes ON classes.rowid = classes_fts.rowid
+           WHERE classes_fts MATCH ?
+           LIMIT 10`
+        )
+        .all("terminal");
+      expect(matches).toMatchObject([{ className: "Land_Republic_Terminal_F", displayName: "Republic Terminal" }]);
+    } finally {
+      closeCatalogDb(catalog);
+    }
+  });
 });
 
 describe("sidecar state", () => {
