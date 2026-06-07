@@ -96,6 +96,160 @@ switch (_action) do {
     case "terrain.sample_area": {
         _result = [_params] call AMCP_fnc_sampleTerrainArea;
     };
+    case "eden.create_entity": {
+        _result = [_params] call AMCP_fnc_createEntity;
+    };
+    case "eden.set_entity_transform": {
+        private _entityId = _params getOrDefault ["entityId", ""];
+        private _entity = [_entityId] call AMCP_fnc_resolveEntity;
+        if (isNull _entity) then {
+            _ok = false;
+            _error = [_entityId] call _entityMissing;
+        } else {
+            private _previous = createHashMap;
+            if (!(_params getOrDefault ["dryRun", true])) then {
+                collect3DENHistory {
+                    _previous = [_entity, _params getOrDefault ["transform", createHashMap]] call AMCP_fnc_applyTransform;
+                };
+            };
+            _result = createHashMapFromArray [
+                ["dryRun", _params getOrDefault ["dryRun", true]],
+                ["updated", [_entityId]],
+                ["previous", _previous]
+            ];
+        };
+    };
+    case "eden.set_entity_attributes": {
+        private _entityId = _params getOrDefault ["entityId", ""];
+        private _entity = [_entityId] call AMCP_fnc_resolveEntity;
+        if (isNull _entity) then {
+            _ok = false;
+            _error = [_entityId] call _entityMissing;
+        } else {
+            private _attributeResult = createHashMapFromArray [
+                ["previous", createHashMap],
+                ["updatedAttributes", keys (_params getOrDefault ["attributes", createHashMap])],
+                ["warnings", []]
+            ];
+            if (!(_params getOrDefault ["dryRun", true])) then {
+                collect3DENHistory {
+                    _attributeResult = [_entity, _params getOrDefault ["attributes", createHashMap]] call AMCP_fnc_applyAttributes;
+                };
+            };
+            _result = createHashMapFromArray [
+                ["dryRun", _params getOrDefault ["dryRun", true]],
+                ["updated", [_entityId]],
+                ["previous", _attributeResult getOrDefault ["previous", createHashMap]],
+                ["updatedAttributes", _attributeResult getOrDefault ["updatedAttributes", []]],
+                ["warnings", _attributeResult getOrDefault ["warnings", []]]
+            ];
+        };
+    };
+    case "eden.append_init": {
+        private _entityId = _params getOrDefault ["entityId", ""];
+        private _entity = [_entityId] call AMCP_fnc_resolveEntity;
+        if (isNull _entity) then {
+            _ok = false;
+            _error = [_entityId] call _entityMissing;
+        } else {
+            private _previousInit = ((_entity get3DENAttribute "Init") param [0, ""]);
+            private _newInit = format ["%1%2%3", _previousInit, _params getOrDefault ["separator", toString [10]], _params getOrDefault ["text", ""]];
+            if (!(_params getOrDefault ["dryRun", true])) then {
+                collect3DENHistory {
+                    _entity set3DENAttribute ["Init", _newInit];
+                };
+            };
+            _result = createHashMapFromArray [
+                ["dryRun", _params getOrDefault ["dryRun", true]],
+                ["updated", [_entityId]],
+                ["previous", createHashMapFromArray [["init", _previousInit]]],
+                ["init", _newInit]
+            ];
+        };
+    };
+    case "eden.delete_entities": {
+        private _ids = _params getOrDefault ["entityIds", []];
+        private _deleted = [];
+        private _missing = [];
+        if (!(_params getOrDefault ["dryRun", true])) then {
+            private _entities = [];
+            {
+                private _entity = [_x] call AMCP_fnc_resolveEntity;
+                if (isNull _entity) then {
+                    _missing pushBack _x;
+                } else {
+                    _entities pushBack _entity;
+                    _deleted pushBack _x;
+                };
+            } forEach _ids;
+            collect3DENHistory {
+                delete3DENEntities _entities;
+            };
+        } else {
+            _deleted = _ids;
+        };
+        _result = createHashMapFromArray [
+            ["dryRun", _params getOrDefault ["dryRun", true]],
+            ["deleted", _deleted],
+            ["missing", _missing]
+        ];
+    };
+    case "eden.set_selection": {
+        private _entities = [];
+        private _selected = [];
+        private _missing = [];
+        {
+            private _entity = [_x] call AMCP_fnc_resolveEntity;
+            if (isNull _entity) then {
+                _missing pushBack _x;
+            } else {
+                _entities pushBack _entity;
+                _selected pushBack _x;
+            };
+        } forEach (_params getOrDefault ["entityIds", []]);
+        set3DENSelected _entities;
+        if (_params getOrDefault ["focus", false]) then {
+            do3DENAction "CameraToSelection";
+        };
+        _result = createHashMapFromArray [
+            ["selected", _selected],
+            ["missing", _missing]
+        ];
+    };
+    case "eden.clear_selection": {
+        set3DENSelected [];
+        _result = createHashMapFromArray [["selected", []]];
+    };
+    case "eden.focus_entities": {
+        private _focusParams = +_params;
+        _focusParams set ["focus", true];
+        _focusParams set ["entityIds", _params getOrDefault ["entityIds", []]];
+        private _entities = [];
+        private _selected = [];
+        private _missing = [];
+        {
+            private _entity = [_x] call AMCP_fnc_resolveEntity;
+            if (isNull _entity) then {
+                _missing pushBack _x;
+            } else {
+                _entities pushBack _entity;
+                _selected pushBack _x;
+            };
+        } forEach (_focusParams get "entityIds");
+        set3DENSelected _entities;
+        do3DENAction "CameraToSelection";
+        _result = createHashMapFromArray [
+            ["selected", _selected],
+            ["missing", _missing]
+        ];
+    };
+    case "eden.batch": {
+        _result = [_params] call AMCP_fnc_applyBatch;
+    };
+    case "eden.validate_plan": {
+        private _plan = _params getOrDefault ["plan", createHashMap];
+        _result = [_plan] call AMCP_fnc_validateBatch;
+    };
     default {
         _ok = false;
         _error = createHashMapFromArray [
@@ -114,8 +268,9 @@ private _payload = createHashMapFromArray [
     ["durationMs", _durationMs],
     ["warnings", _warnings],
     ["audit", createHashMapFromArray [
-        ["write", false],
-        ["dryRun", false]
+        ["write", (_command getOrDefault ["mode", "read"]) in ["write", "destructive"]],
+        ["dryRun", _command getOrDefault ["dryRun", false]],
+        ["confirmed", ((_params getOrDefault ["confirmation", createHashMap]) getOrDefault ["confirmed", false])]
     ]]
 ];
 

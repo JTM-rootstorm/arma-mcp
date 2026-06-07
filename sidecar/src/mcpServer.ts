@@ -2,7 +2,15 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { BridgeConfig } from "./httpBridge.js";
 import { generateCheckpointPlan, validateCheckpointClasses } from "./checkpointPlanner.js";
-import { confirmationSchema, transformSchema, vector3Schema, type ArmaMcpActionMode, type ArmaMcpActionName } from "./protocol.js";
+import {
+  confirmationSchema,
+  entityTypeSchema,
+  transformSchema,
+  vector3Schema,
+  type ArmaMcpActionMode,
+  type ArmaMcpActionName
+} from "./protocol.js";
+import { enforceToolPolicy } from "./policy.js";
 import {
   compositionPlanSchema,
   generateCheckpointPlanInputSchema,
@@ -55,6 +63,84 @@ const terrainSampleAreaToolSchema = z.object({
   spacingMeters: z.number().positive().max(100).default(10),
   includeWater: z.boolean().default(true),
   includeSurfaceNormal: z.boolean().default(false)
+});
+const writeBaseSchema = z.object({
+  dryRun: z.boolean().default(true),
+  confirmation: confirmationSchema
+});
+const createEntityToolSchema = writeBaseSchema.extend({
+  type: entityTypeSchema.default("Object"),
+  className: z.string().trim().min(1).max(160),
+  transform: transformSchema.default({}),
+  attributes: z.record(z.string(), z.unknown()).optional(),
+  select: z.boolean().default(true),
+  layer: z.string().trim().min(1).max(160).optional()
+});
+const setEntityTransformToolSchema = writeBaseSchema.extend({
+  entityId: entityIdSchema,
+  transform: transformSchema
+});
+const setEntityAttributesToolSchema = writeBaseSchema.extend({
+  entityId: entityIdSchema,
+  attributes: z.record(z.string(), z.unknown()),
+  mode: z.enum(["patch", "replace"]).default("patch")
+});
+const appendInitToolSchema = writeBaseSchema.extend({
+  entityId: entityIdSchema,
+  text: z.string().min(1).max(16_000),
+  separator: z.string().max(20).default("\n")
+});
+const deleteEntitiesToolSchema = writeBaseSchema.extend({
+  entityIds: z.array(entityIdSchema).min(1).max(100)
+});
+const selectionToolSchema = z.object({
+  entityIds: z.array(entityIdSchema).max(100),
+  focus: z.boolean().default(false)
+});
+const focusEntitiesToolSchema = z.object({
+  entityIds: z.array(entityIdSchema).min(1).max(20)
+});
+const batchOperationSchema = z
+  .object({
+    op: z.enum([
+      "create_entity",
+      "set_transform",
+      "set_attributes",
+      "delete_entity",
+      "select_entities",
+      "sync_entities",
+      "assign_layer",
+      "create_marker",
+      "create_trigger",
+      "create_waypoint",
+      "create_module"
+    ]),
+    clientRef: z.string().min(1).max(120).optional(),
+    entityId: entityIdSchema.optional(),
+    entityIds: z.array(entityIdSchema).max(100).optional(),
+    type: entityTypeSchema.optional(),
+    className: z.string().trim().min(1).max(160).optional(),
+    transform: transformSchema.optional(),
+    attributes: z.record(z.string(), z.unknown()).optional(),
+    text: z.string().max(500).optional(),
+    layer: z.string().max(160).optional()
+  })
+  .strict();
+const batchToolSchema = writeBaseSchema.extend({
+  historyLabel: z.string().trim().min(1).max(160).default("Arma MCP batch"),
+  operations: z.array(batchOperationSchema).max(250)
+});
+const validatePlanToolSchema = z.object({
+  plan: z.object({ operations: z.array(batchOperationSchema).max(250) }).passthrough(),
+  checks: z
+    .object({
+      classes: z.boolean().default(true),
+      terrain: z.boolean().default(false),
+      water: z.boolean().default(false),
+      bounds: z.boolean().default(false),
+      destructive: z.boolean().default(true)
+    })
+    .default({ classes: true, terrain: false, water: false, bounds: false, destructive: true })
 });
 
 export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig): McpServer {
@@ -180,6 +266,72 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig)
     "read",
     terrainSampleAreaToolSchema,
     "Sample Terrain Area"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.create_entity",
+    "eden.create_entity",
+    "write",
+    createEntityToolSchema,
+    "Create Eden Entity"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.set_entity_transform",
+    "eden.set_entity_transform",
+    "write",
+    setEntityTransformToolSchema,
+    "Set Eden Entity Transform"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.set_entity_attributes",
+    "eden.set_entity_attributes",
+    "write",
+    setEntityAttributesToolSchema,
+    "Set Eden Entity Attributes"
+  );
+  registerActionTool(server, state, "arma.eden.append_init", "eden.append_init", "write", appendInitToolSchema, "Append Init");
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.delete_entities",
+    "eden.delete_entities",
+    "destructive",
+    deleteEntitiesToolSchema,
+    "Delete Eden Entities"
+  );
+  registerActionTool(server, state, "arma.eden.set_selection", "eden.set_selection", "write", selectionToolSchema, "Set Selection");
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.clear_selection",
+    "eden.clear_selection",
+    "write",
+    emptyInputSchema,
+    "Clear Selection"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.focus_entities",
+    "eden.focus_entities",
+    "write",
+    focusEntitiesToolSchema,
+    "Focus Entities"
+  );
+  registerActionTool(server, state, "arma.eden.batch", "eden.batch", "write", batchToolSchema, "Apply Eden Batch");
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.validate_plan",
+    "eden.validate_plan",
+    "read",
+    validatePlanToolSchema,
+    "Validate Eden Plan"
   );
 
   server.registerTool(
@@ -307,10 +459,23 @@ function registerActionTool<T extends z.ZodObject<z.ZodRawShape>>(
     },
     async (input) => {
       const parsed = inputSchema.parse(input);
+      const policy = enforceToolPolicy({
+        action: actionName,
+        dryRun: "dryRun" in parsed ? parsed.dryRun === true : false,
+        confirmation:
+          "confirmation" in parsed && parsed.confirmation && typeof parsed.confirmation === "object"
+            ? (parsed.confirmation as { confirmed: boolean; reason: string })
+            : undefined,
+        attributes:
+          "attributes" in parsed && parsed.attributes && typeof parsed.attributes === "object" && !Array.isArray(parsed.attributes)
+            ? (parsed.attributes as Record<string, unknown>)
+            : undefined,
+        operations: "operations" in parsed && Array.isArray(parsed.operations) ? parsed.operations : undefined
+      });
       const queued = state.queueAction({
         action: actionName,
         mode,
-        params: parsed,
+        params: policy.warnings.length > 0 ? { ...parsed, policyWarnings: policy.warnings } : parsed,
         dryRun: "dryRun" in parsed && parsed.dryRun === true,
         requiresConfirmation: "confirmation" in parsed && confirmationSchema.safeParse(parsed.confirmation).success,
         context: {

@@ -5,6 +5,7 @@ import { logger } from "./log.js";
 import { compositionPlanSchema } from "./schema.js";
 import { createState } from "./state.js";
 import { actionPacketSchema, schemaVersion } from "./protocol.js";
+import { enforceToolPolicy } from "./policy.js";
 
 const bridges: StartedBridge[] = [];
 
@@ -132,6 +133,51 @@ describe("checkpoint planner", () => {
         operations: [{ type: "deleteObject", id: "bad" }]
       })
     ).toThrow();
+  });
+});
+
+describe("write policy", () => {
+  it("requires confirmation for destructive non-dry-run deletes", () => {
+    expect(() =>
+      enforceToolPolicy({
+        action: "eden.delete_entities",
+        dryRun: false
+      })
+    ).toThrow(/confirmation/);
+    expect(() =>
+      enforceToolPolicy({
+        action: "eden.delete_entities",
+        dryRun: false,
+        confirmation: { confirmed: true, reason: "remove failed preview" }
+      })
+    ).not.toThrow();
+  });
+
+  it("rejects non-allowlisted write attributes", () => {
+    expect(() =>
+      enforceToolPolicy({
+        action: "eden.set_entity_attributes",
+        dryRun: true,
+        attributes: { arbitraryCodeField: "nope" }
+      })
+    ).toThrow(/not allowlisted/);
+  });
+
+  it("requires confirmation for risky init writes", () => {
+    expect(() =>
+      enforceToolPolicy({
+        action: "eden.set_entity_attributes",
+        dryRun: false,
+        attributes: { init: "this callExtension 'x';" }
+      })
+    ).toThrow(/risky/);
+    expect(
+      enforceToolPolicy({
+        action: "eden.set_entity_attributes",
+        dryRun: true,
+        attributes: { init: "this callExtension 'x';" }
+      }).warnings
+    ).toHaveLength(1);
   });
 });
 

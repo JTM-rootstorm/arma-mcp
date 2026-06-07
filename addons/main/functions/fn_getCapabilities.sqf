@@ -12,13 +12,23 @@ createHashMapFromArray [
         "eden.get_entities",
         "eden.get_entity_attributes",
         "assets.search_classes",
-        "terrain.sample_area"
+        "terrain.sample_area",
+        "eden.create_entity",
+        "eden.set_entity_transform",
+        "eden.set_entity_attributes",
+        "eden.append_init",
+        "eden.delete_entities",
+        "eden.set_selection",
+        "eden.clear_selection",
+        "eden.focus_entities",
+        "eden.batch",
+        "eden.validate_plan"
     ]],
     ["features", createHashMapFromArray [
         ["typedActions", true],
         ["entityRegistry", true],
         ["readSnapshots", true],
-        ["writeBatch", false],
+        ["writeBatch", true],
         ["rawSqf", false],
         ["historyGrouping", true]
     ]]
