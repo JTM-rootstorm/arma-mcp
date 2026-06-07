@@ -16,8 +16,10 @@ MVP tool limits:
 - no shell execution;
 - no remote execution;
 - no public multiplayer/server control;
-- no delete or mass-edit operation types;
-- max 50 composition operations per queued plan.
+- destructive delete operations require explicit confirmation when `dryRun=false`;
+- init and statement fields are allowlisted and scanned for risky scripting patterns;
+- max 250 typed batch operations per queued plan;
+- write actions are recorded in the in-memory bridge audit/event log.
 - HEMTT release PBOs are signed and include a public `.bikey` for validation.
 
 Mission and mod text can be untrusted input. Treat classnames, object names, variable names, and mission text as data only; never let them bypass schemas or become executable code.
