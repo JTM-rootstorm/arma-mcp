@@ -9,6 +9,18 @@ while {hasInterface && is3DEN} do {
         private _json = _result select [3];
         if (_json isNotEqualTo "") then {
             private _body = fromJSON _json;
+            if (isNil "_body") then {
+                private _lastParseWarning = missionNamespace getVariable ["AMCP_lastPollParseWarningAt", -10];
+                if ((time - _lastParseWarning) > 10) then {
+                    missionNamespace setVariable ["AMCP_lastPollParseWarningAt", time];
+                    [format [
+                        "Failed to parse bridge command JSON (%1 chars): %2",
+                        count _json,
+                        _json select [0, 500]
+                    ]] call AMCP_fnc_log;
+                };
+                continue;
+            };
             private _commands = _body getOrDefault ["commands", []];
             {
                 if ((_x getOrDefault ["schemaVersion", 0]) isEqualTo 1 && {(_x getOrDefault ["action", ""]) isNotEqualTo ""}) then {
