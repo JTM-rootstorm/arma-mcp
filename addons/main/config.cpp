@@ -49,9 +49,11 @@ class CfgFunctions {
 class Cfg3DEN {
     class EventHandlers {
         class AMCP {
-            onMissionLoad = "[] call AMCP_fnc_startEdenBridge";
-            onMissionNew = "[] call AMCP_fnc_startEdenBridge";
-            onMissionPreviewEnd = "[] call AMCP_fnc_startEdenBridge";
+            init = "[] spawn {waitUntil {sleep 0.1; is3DEN}; [] call AMCP_fnc_startEdenBridge;}";
+            OnMissionLoad = "[] call AMCP_fnc_startEdenBridge";
+            OnMissionNew = "[] call AMCP_fnc_startEdenBridge";
+            OnMissionPreviewEnd = "[] spawn {sleep 0.5; [] call AMCP_fnc_startEdenBridge;}";
+            OnTerrainNew = "[] call AMCP_fnc_startEdenBridge";
         };
     };
 };
