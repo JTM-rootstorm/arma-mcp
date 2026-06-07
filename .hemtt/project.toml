@@ -1,0 +1,10 @@
+name = "Arma MCP"
+prefix = "amcp"
+mainprefix = "z"
+author = "Local"
+
+[version]
+major = 0
+minor = 1
+patch = 0
+build = 0

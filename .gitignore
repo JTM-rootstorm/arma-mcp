@@ -3,6 +3,8 @@ dist/
 build/
 *.log
 *.tmp
+.hemttprivatekey
+.biprivatekey
 
 sidecar/node_modules/
 sidecar/dist/

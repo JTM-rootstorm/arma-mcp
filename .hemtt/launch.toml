@@ -1,0 +1,9 @@
+[default]
+mission = "test.VR"
+parameters = [
+  "-skipIntro",
+  "-noSplash",
+  "-showScriptErrors",
+  "-debug",
+  "-filePatching"
+]
