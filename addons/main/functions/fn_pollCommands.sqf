@@ -11,7 +11,11 @@ while {hasInterface && is3DEN} do {
             private _body = fromJSON _json;
             private _commands = _body getOrDefault ["commands", []];
             {
-                [_x] call AMCP_fnc_applyPlan;
+                if ((_x getOrDefault ["schemaVersion", 0]) isEqualTo 1 && {(_x getOrDefault ["action", ""]) isNotEqualTo ""}) then {
+                    [_x] call AMCP_fnc_dispatchAction;
+                } else {
+                    [_x] call AMCP_fnc_applyPlan;
+                };
             } forEach _commands;
         };
     };

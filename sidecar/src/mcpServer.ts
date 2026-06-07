@@ -1,6 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
 import type { BridgeConfig } from "./httpBridge.js";
 import { generateCheckpointPlan, validateCheckpointClasses } from "./checkpointPlanner.js";
+import { confirmationSchema, transformSchema, vector3Schema, type ArmaMcpActionMode, type ArmaMcpActionName } from "./protocol.js";
 import {
   compositionPlanSchema,
   generateCheckpointPlanInputSchema,
@@ -11,11 +13,174 @@ import {
 } from "./schema.js";
 import type { ArmaMcpState } from "./state.js";
 
+const emptyInputSchema = z.object({});
+const readOptionsSchema = z.object({
+  includeAttributes: z.boolean().default(true),
+  includeConfig: z.boolean().default(true),
+  includeModel: z.boolean().default(false)
+});
+const entityIdSchema = z.string().min(1).max(120);
+const getEntitySnapshotToolSchema = readOptionsSchema.extend({
+  entityId: entityIdSchema,
+  attributeNames: z.array(z.string().min(1).max(80)).max(50).optional()
+});
+const getEntitiesToolSchema = readOptionsSchema.extend({
+  entityIds: z.array(entityIdSchema).min(1).max(100)
+});
+const entityListToolSchema = readOptionsSchema.extend({
+  types: z.array(z.string().min(1).max(40)).max(8).optional(),
+  classNameContains: z.string().max(160).optional(),
+  variableNameContains: z.string().max(160).optional(),
+  radius: z
+    .object({
+      centerATL: vector3Schema,
+      meters: z.number().positive().max(10_000)
+    })
+    .optional(),
+  limit: z.number().int().positive().max(500).default(200)
+});
+const getEntityAttributesToolSchema = z.object({
+  entityId: entityIdSchema,
+  attributeNames: z.array(z.string().min(1).max(80)).max(50).optional()
+});
+const assetSearchToolSchema = z.object({
+  query: z.string().trim().min(1).max(160),
+  kinds: z.array(z.string().min(1).max(40)).max(10).optional(),
+  factions: z.array(z.string().min(1).max(80)).max(20).optional(),
+  limit: z.number().int().positive().max(100).default(25)
+});
+const terrainSampleAreaToolSchema = z.object({
+  centerATL: vector3Schema,
+  radiusMeters: z.number().positive().max(500),
+  spacingMeters: z.number().positive().max(100).default(10),
+  includeWater: z.boolean().default(true),
+  includeSurfaceNormal: z.boolean().default(false)
+});
+
 export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig): McpServer {
   const server = new McpServer({
     name: "arma-mcp",
     version: "0.1.0"
   });
+
+  server.registerTool(
+    "arma.ping",
+    {
+      title: "Arma MCP Ping",
+      description: "Check MCP server health without waiting on Eden.",
+      inputSchema: emptyInputSchema.shape
+    },
+    async () =>
+      jsonToolResult({
+        ok: true,
+        server: "arma-mcp",
+        version: "0.1.0",
+        httpBridge: { host: bridgeConfig.host, port: bridgeConfig.port }
+      })
+  );
+
+  server.registerTool(
+    "arma.bridge.get_status",
+    {
+      title: "Bridge Status",
+      description: "Check sidecar queue and most recent Eden contact.",
+      inputSchema: emptyInputSchema.shape
+    },
+    async () =>
+      jsonToolResult({
+        sidecarConnected: true,
+        armaConnected: state.getLastEdenSeenAt() !== null,
+        edenAvailable: state.getLastEdenSeenAt() !== null,
+        pendingActions: state.pendingCommandCount(),
+        pendingResults: state.pendingActionCount(),
+        lastSeenAt: state.getLastEdenSeenAt(),
+        httpBridge: { host: bridgeConfig.host, port: bridgeConfig.port }
+      })
+  );
+
+  registerActionTool(server, state, "arma.bridge.ping", "bridge.ping", "read", emptyInputSchema, "Bridge Ping");
+  registerActionTool(
+    server,
+    state,
+    "arma.bridge.get_capabilities",
+    "bridge.get_capabilities",
+    "read",
+    emptyInputSchema,
+    "Bridge Capabilities"
+  );
+  registerActionTool(server, state, "arma.eden.get_status", "eden.get_status", "read", emptyInputSchema, "Eden Status");
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.get_selection",
+    "eden.get_selection",
+    "read",
+    readOptionsSchema,
+    "Get Eden Selection"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.list_entities",
+    "eden.list_entities",
+    "read",
+    entityListToolSchema,
+    "List Eden Entities"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.find_entities",
+    "eden.find_entities",
+    "read",
+    entityListToolSchema,
+    "Find Eden Entities"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.get_entity_snapshot",
+    "eden.get_entity_snapshot",
+    "read",
+    getEntitySnapshotToolSchema,
+    "Get Eden Entity Snapshot"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.get_entities",
+    "eden.get_entities",
+    "read",
+    getEntitiesToolSchema,
+    "Get Eden Entities"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.get_entity_attributes",
+    "eden.get_entity_attributes",
+    "read",
+    getEntityAttributesToolSchema,
+    "Get Eden Entity Attributes"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.assets.search_classes",
+    "assets.search_classes",
+    "read",
+    assetSearchToolSchema,
+    "Search Arma Classes"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.terrain.sample_area",
+    "terrain.sample_area",
+    "read",
+    terrainSampleAreaToolSchema,
+    "Sample Terrain Area"
+  );
 
   server.registerTool(
     "arma_ping",
@@ -122,6 +287,45 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig)
   );
 
   return server;
+}
+
+function registerActionTool<T extends z.ZodObject<z.ZodRawShape>>(
+  server: McpServer,
+  state: ArmaMcpState,
+  toolName: string,
+  actionName: ArmaMcpActionName,
+  mode: ArmaMcpActionMode,
+  inputSchema: T,
+  title: string
+): void {
+  server.registerTool(
+    toolName,
+    {
+      title,
+      description: `Dispatch typed Arma action ${actionName}.`,
+      inputSchema: inputSchema.shape
+    },
+    async (input) => {
+      const parsed = inputSchema.parse(input);
+      const queued = state.queueAction({
+        action: actionName,
+        mode,
+        params: parsed,
+        dryRun: "dryRun" in parsed && parsed.dryRun === true,
+        requiresConfirmation: "confirmation" in parsed && confirmationSchema.safeParse(parsed.confirmation).success,
+        context: {
+          confirmationConfirmed:
+            "confirmation" in parsed &&
+            typeof parsed.confirmation === "object" &&
+            parsed.confirmation !== null &&
+            "confirmed" in parsed.confirmation &&
+            parsed.confirmation.confirmed === true
+        }
+      });
+      const result = await queued.result;
+      return jsonToolResult(result.result ?? result);
+    }
+  );
 }
 
 function jsonToolResult(value: unknown) {

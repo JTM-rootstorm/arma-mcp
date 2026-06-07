@@ -16,14 +16,24 @@ class CfgFunctions {
         class main {
             file = "\z\amcp\addons\main\functions";
             class applyPlan {};
+            class buildEntitySnapshot {};
             class buildObjectSnapshot {};
             class callBridge {};
             class captureSelection {};
+            class dispatchAction {};
+            class edenGetStatus {};
+            class edenListEntities {};
+            class getCapabilities {};
             class log {};
             class pollCommands {};
             class postInit {
                 postInit = 1;
             };
+            class readEntityAttributes {};
+            class registerEntity {};
+            class resolveEntity {};
+            class sampleTerrainArea {};
+            class searchClasses {};
         };
     };
 };
