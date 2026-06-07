@@ -19,16 +19,16 @@ while {hasInterface && is3DEN} do {
                         _json select [0, 500]
                     ]] call AMCP_fnc_log;
                 };
-                continue;
+            } else {
+                private _commands = _body getOrDefault ["commands", []];
+                {
+                    if ((_x getOrDefault ["schemaVersion", 0]) isEqualTo 1 && {(_x getOrDefault ["action", ""]) isNotEqualTo ""}) then {
+                        [_x] call AMCP_fnc_dispatchAction;
+                    } else {
+                        [_x] call AMCP_fnc_applyPlan;
+                    };
+                } forEach _commands;
             };
-            private _commands = _body getOrDefault ["commands", []];
-            {
-                if ((_x getOrDefault ["schemaVersion", 0]) isEqualTo 1 && {(_x getOrDefault ["action", ""]) isNotEqualTo ""}) then {
-                    [_x] call AMCP_fnc_dispatchAction;
-                } else {
-                    [_x] call AMCP_fnc_applyPlan;
-                };
-            } forEach _commands;
         };
     };
     sleep 1;

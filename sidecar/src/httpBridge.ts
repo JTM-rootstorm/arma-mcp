@@ -141,6 +141,10 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
 }
 
 function sendJson(response: ServerResponse, statusCode: number, body: unknown): void {
-  response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
-  response.end(JSON.stringify(body));
+  const payload = JSON.stringify(body);
+  response.writeHead(statusCode, {
+    "content-type": "application/json; charset=utf-8",
+    "content-length": Buffer.byteLength(payload).toString()
+  });
+  response.end(payload);
 }
