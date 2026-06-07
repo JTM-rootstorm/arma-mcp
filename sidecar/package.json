@@ -1,0 +1,27 @@
+{
+  "name": "sidecar",
+  "version": "1.0.0",
+  "description": "Local Arma 3 Eden MCP sidecar and localhost bridge.",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "dev:http": "tsx src/index.ts --http-only",
+    "test": "vitest run",
+    "validate": "npm run build && npm test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.2",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}

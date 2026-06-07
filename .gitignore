@@ -1,0 +1,11 @@
+node_modules/
+dist/
+build/
+*.log
+*.tmp
+
+sidecar/node_modules/
+sidecar/dist/
+extension/build*/
+.hemttout/
+releases/
