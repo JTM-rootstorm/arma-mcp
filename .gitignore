@@ -12,6 +12,10 @@ build/
 .biprivatekey
 ArmaMCP.ini
 **/ArmaMCP.ini
+.mcp-cache/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 
 sidecar/node_modules/
 sidecar/dist/
