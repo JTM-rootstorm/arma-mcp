@@ -31,6 +31,31 @@ private _array = {
     _default
 };
 
+private _sourceAddon = {
+    params ["_cfg"];
+    private _addons = configSourceAddonList _cfg;
+    if (_addons isEqualType [] && {_addons isNotEqualTo []}) exitWith {_addons select 0};
+    ""
+};
+
+private _sourceMod = {
+    params ["_cfg"];
+    private _mod = configSourceMod _cfg;
+    if (_mod isEqualType "") exitWith {_mod};
+    ""
+};
+
+private _parents = {
+    params ["_cfg"];
+    private _result = [];
+    private _parent = inheritsFrom _cfg;
+    while {isClass _parent} do {
+        _result pushBack (configName _parent);
+        _parent = inheritsFrom _parent;
+    };
+    _result
+};
+
 private _collectClasses = {
     params ["_cfg"];
     private _found = [];
@@ -79,13 +104,16 @@ if (_start < _total) then {
             ["side", [_cfg, "side", -1] call _number],
             ["author", [_cfg, "author", ""] call _text],
             ["dlc", [_cfg, "dlc", ""] call _text],
+            ["source_addon", [_cfg] call _sourceAddon],
+            ["source_mod", [_cfg] call _sourceMod],
             ["picture", [_cfg, "picture", ""] call _text],
             ["icon", [_cfg, "icon", ""] call _text],
             ["editor_preview", [_cfg, "editorPreview", ""] call _text],
             ["weapons", [_cfg, "weapons", []] call _array],
             ["magazines", [_cfg, "magazines", []] call _array],
             ["linked_items", [_cfg, "linkedItems", []] call _array],
-            ["raw_config", _rawConfig]
+            ["raw_config", _rawConfig],
+            ["parents", [_cfg] call _parents]
         ]);
     };
 };

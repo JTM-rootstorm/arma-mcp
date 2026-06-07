@@ -9,16 +9,24 @@ import {
   createVisualInspectionRun,
   ensureCatalogSchema,
   findCatalogByDimensions,
+  getCatalogSearchDiagnostics,
   getCatalogClass,
   getCatalogStatus,
   getCatalogTags,
+  getScanManifest,
+  getScanProgress,
+  initializeScanTargets,
   listCatalogCategories,
   listCatalogFactions,
   listClassesMissingMeasurements,
   listClassScreenshots,
   listCatalogMods,
+  markScanFinished,
+  markStaleScans,
   openCatalogDb,
+  repairStaleScan,
   searchCatalogClasses,
+  writeScanTargetProgress,
   writeClassMeasurement,
   writeScanManifest
 } from "./catalogDb.js";
@@ -51,12 +59,41 @@ import {
 import type { ArmaMcpState } from "./state.js";
 
 const emptyInputSchema = z.object({});
+type CatalogScanJob = {
+  scanId: string;
+  targets: string[];
+  chunkSize: number;
+  includeRaw: boolean;
+  maxChunks: number;
+  timeoutMs: number;
+  cancelRequested: boolean;
+  promise?: Promise<void>;
+};
+const catalogScanJobs = new Map<string, CatalogScanJob>();
 const catalogScanToolSchema = z.object({
   scanId: z.string().trim().min(1).max(160).optional(),
   targets: z.array(z.string().trim().min(1).max(80)).max(20).default([...DEFAULT_SCAN_TARGETS]),
   chunkSize: z.number().int().positive().max(500).default(100),
+  includeRaw: z.boolean().default(false),
   maxChunks: z.number().int().positive().max(50_000).default(10_000),
-  timeoutMs: z.number().int().positive().max(300_000).default(120_000)
+  timeoutMs: z.number().int().positive().max(60_000).default(30_000),
+  background: z.boolean().default(true)
+});
+const catalogScanStatusToolSchema = z.object({
+  scanId: z.string().trim().min(1).max(160).optional()
+});
+const catalogScanPollToolSchema = z.object({
+  scanId: z.string().trim().min(1).max(160).optional(),
+  maxChunks: z.number().int().positive().max(100).default(5),
+  maxRuntimeMs: z.number().int().positive().max(55_000).default(45_000),
+  timeoutMs: z.number().int().positive().max(60_000).default(30_000)
+});
+const catalogScanCancelToolSchema = z.object({
+  scanId: z.string().trim().min(1).max(160)
+});
+const catalogScanFinalizeToolSchema = z.object({
+  scanId: z.string().trim().min(1).max(160).optional(),
+  timeoutMs: z.number().int().positive().max(60_000).default(30_000)
 });
 const catalogSearchToolSchema = z.object({
   query: z.string().trim().max(200).optional(),
@@ -665,62 +702,112 @@ function registerCatalogTools(server: McpServer, state: ArmaMcpState): void {
     "arma.catalog.scan",
     {
       title: "Scan Loaded Arma Catalog",
-      description: "Ask Eden to stream loaded config class chunks into the local SQLite catalog cache.",
+      description: "Start a background loaded-config scan. Use scanStatus/scanPoll to observe or advance it.",
       inputSchema: catalogScanToolSchema.shape
     },
+    async (input) => startCatalogScanTool(state, catalogScanToolSchema.parse(input))
+  );
+
+  server.registerTool(
+    "arma.catalog.scanStart",
+    {
+      title: "Start Catalog Scan",
+      description: "Create a background catalog scan job and return quickly with scan progress metadata.",
+      inputSchema: catalogScanToolSchema.shape
+    },
+    async (input) => startCatalogScanTool(state, catalogScanToolSchema.parse(input))
+  );
+
+  server.registerTool(
+    "arma.catalog.scanStatus",
+    {
+      title: "Catalog Scan Status",
+      description: "Inspect background or persisted catalog scan progress.",
+      inputSchema: catalogScanStatusToolSchema.shape
+    },
     async (input) => {
-      const parsed = catalogScanToolSchema.parse(input);
-      return withCatalogDb(async (catalogDb) => {
-        const started = await dispatchCatalogAction(state, "catalog.scanStart", {
-          scanId: parsed.scanId,
-          targets: parsed.targets,
-          chunkSize: parsed.chunkSize
-        }, parsed.timeoutMs);
-        const startPayload = asRecord(started.result);
-        const scanId = String(startPayload.scan_id ?? startPayload.scanId ?? parsed.scanId ?? new Date().toISOString());
-        writeScanManifest(catalogDb, {
-          scanId,
-          gameVersion: stringOrNull(startPayload.game_version ?? startPayload.gameVersion),
-          worldName: stringOrNull(startPayload.world_name ?? startPayload.worldName),
-          loadedModsHash: stableHash(startPayload.loaded_mods ?? startPayload.loadedMods ?? []),
-          loadedAddonsHash: stableHash(startPayload.loaded_addons ?? startPayload.loadedAddons ?? []),
-          status: "running"
+      const parsed = catalogScanStatusToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => {
+        markStaleScans(catalogDb);
+        const scanId = parsed.scanId ?? latestScanId(catalogDb);
+        return jsonToolResult({
+          ok: true,
+          activeJobs: [...catalogScanJobs.keys()],
+          scan: scanId ? getScanProgress(catalogDb, scanId) : null,
+          catalog: getCatalogStatus(catalogDb)
         });
+      });
+    }
+  );
 
-        const counts: Record<string, number> = {};
-        for (const target of parsed.targets) {
-          let chunkIndex = 0;
-          let finishedTarget = false;
-          while (!finishedTarget) {
-            if (chunkIndex >= parsed.maxChunks) {
-              throw new Error(`Catalog scan exceeded maxChunks=${parsed.maxChunks} while scanning ${target}`);
-            }
-            const chunkResult = await dispatchCatalogAction(
-              state,
-              "catalog.scanChunk",
-              { scanId, configPath: target, chunkIndex, chunkSize: parsed.chunkSize },
-              parsed.timeoutMs
-            );
-            const chunk = asRecord(chunkResult.result) as CatalogChunk;
-            counts[target] = (counts[target] ?? 0) + ingestCatalogChunk(catalogDb, scanId, chunk);
-            finishedTarget = chunk.is_last_chunk === true || chunk.isLastChunk === true;
-            chunkIndex += 1;
-          }
-        }
+  server.registerTool(
+    "arma.catalog.scanPoll",
+    {
+      title: "Poll Catalog Scan",
+      description: "Advance a bounded amount of scan work and return before client timeouts.",
+      inputSchema: catalogScanPollToolSchema.shape
+    },
+    async (input) => {
+      const parsed = catalogScanPollToolSchema.parse(input);
+      const scanId = parsed.scanId ?? (await withCatalogDb((catalogDb) => latestScanId(catalogDb)));
+      if (!scanId) {
+        return jsonToolResult({ ok: false, error: { code: "no_scan_available" } });
+      }
+      const result = await pollCatalogScan(state, scanId, parsed.maxChunks, parsed.maxRuntimeMs, parsed.timeoutMs);
+      return jsonToolResult(result);
+    }
+  );
 
-        await dispatchCatalogAction(state, "catalog.scanFinish", { scanId, classCounts: counts }, parsed.timeoutMs);
-        writeScanManifest(catalogDb, {
-          scanId,
-          gameVersion: stringOrNull(startPayload.game_version ?? startPayload.gameVersion),
-          worldName: stringOrNull(startPayload.world_name ?? startPayload.worldName),
-          loadedModsHash: stableHash(startPayload.loaded_mods ?? startPayload.loadedMods ?? []),
-          loadedAddonsHash: stableHash(startPayload.loaded_addons ?? startPayload.loadedAddons ?? []),
-          classCounts: counts,
-          finishedAt: new Date().toISOString(),
-          status: "complete"
-        });
+  server.registerTool(
+    "arma.catalog.scanCancel",
+    {
+      title: "Cancel Catalog Scan",
+      description: "Request cancellation for a running or partial catalog scan.",
+      inputSchema: catalogScanCancelToolSchema.shape
+    },
+    async (input) => {
+      const parsed = catalogScanCancelToolSchema.parse(input);
+      const job = catalogScanJobs.get(parsed.scanId);
+      if (job) {
+        job.cancelRequested = true;
+      }
+      return withCatalogDb((catalogDb) => {
+        markScanFinished(catalogDb, parsed.scanId, "cancelled");
+        return jsonToolResult({ ok: true, scan: getScanProgress(catalogDb, parsed.scanId) });
+      });
+    }
+  );
 
-        return jsonToolResult({ ok: true, scan_id: scanId, counts, catalog: getCatalogStatus(catalogDb) });
+  server.registerTool(
+    "arma.catalog.scanFinalize",
+    {
+      title: "Finalize Catalog Scan",
+      description: "Finalize a completed scan and populate class-count metadata.",
+      inputSchema: catalogScanFinalizeToolSchema.shape
+    },
+    async (input) => {
+      const parsed = catalogScanFinalizeToolSchema.parse(input);
+      const scanId = parsed.scanId ?? (await withCatalogDb((catalogDb) => latestScanId(catalogDb)));
+      if (!scanId) {
+        return jsonToolResult({ ok: false, error: { code: "no_scan_available" } });
+      }
+      return jsonToolResult(await finalizeCatalogScan(state, scanId, parsed.timeoutMs));
+    }
+  );
+
+  server.registerTool(
+    "arma.catalog.scanRepair",
+    {
+      title: "Repair Catalog Scan",
+      description: "Mark stale running chunks partial and make a scan resumable without deleting the cache.",
+      inputSchema: catalogScanStatusToolSchema.shape
+    },
+    async (input) => {
+      const parsed = catalogScanStatusToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => {
+        markStaleScans(catalogDb, 1);
+        const scanId = parsed.scanId ?? latestScanId(catalogDb);
+        return jsonToolResult(scanId ? repairStaleScan(catalogDb, scanId) : { ok: false, error: "no_scan_available" });
       });
     }
   );
@@ -734,17 +821,20 @@ function registerCatalogTools(server: McpServer, state: ArmaMcpState): void {
     },
     async (input) => {
       const parsed = catalogSearchToolSchema.parse(input);
-      return withCatalogDb((catalogDb) =>
-        jsonToolResult({
-          results: searchCatalogClasses(catalogDb, {
+      return withCatalogDb((catalogDb) => {
+        const searchInput = {
             query: parsed.query,
             kind: parsed.kind,
             tags: parsed.tags,
             visualTags: parsed.visual_tags,
             limit: parsed.limit
-          })
-        })
-      );
+          };
+        const results = searchCatalogClasses(catalogDb, searchInput);
+        return jsonToolResult({
+          results,
+          diagnostics: getCatalogSearchDiagnostics(catalogDb, searchInput, results.length)
+        });
+      });
     }
   );
 
@@ -838,11 +928,14 @@ function registerCatalogMeasurementTools(server: McpServer, state: ArmaMcpState)
           visualTags: parsed.visual_tags,
           limit: parsed.limit
         });
-        const measured = [];
+        const measured: Record<string, unknown>[] = [];
+        const skipped: Record<string, unknown>[] = [];
+        const failed: Record<string, unknown>[] = [];
         for (const result of results) {
-          measured.push(await measureCatalogClass(catalogDb, state, String(result.class_name), parsed.force, parsed.timeoutMs));
+          const measurement = await measureCatalogClass(catalogDb, state, String(result.class_name), parsed.force, parsed.timeoutMs);
+          bucketMeasurementResult(measurement, measured, skipped, failed);
         }
-        return jsonToolResult({ measured });
+        return jsonToolResult({ measured, skipped, failed });
       });
     }
   );
@@ -858,11 +951,14 @@ function registerCatalogMeasurementTools(server: McpServer, state: ArmaMcpState)
       const parsed = catalogMeasureMissingToolSchema.parse(input);
       return withCatalogDb(async (catalogDb) => {
         const candidates = listClassesMissingMeasurements(catalogDb, parsed.limit, parsed.kinds);
-        const measured = [];
+        const measured: Record<string, unknown>[] = [];
+        const skipped: Record<string, unknown>[] = [];
+        const failed: Record<string, unknown>[] = [];
         for (const candidate of candidates) {
-          measured.push(await measureCatalogClass(catalogDb, state, String(candidate.className), parsed.force, parsed.timeoutMs));
+          const measurement = await measureCatalogClass(catalogDb, state, String(candidate.className), parsed.force, parsed.timeoutMs);
+          bucketMeasurementResult(measurement, measured, skipped, failed);
         }
-        return jsonToolResult({ measured });
+        return jsonToolResult({ measured, skipped, failed });
       });
     }
   );
@@ -1064,7 +1160,7 @@ function registerCompositionCatalogTools(server: McpServer): void {
     },
     async (input) => {
       const parsed = catalogRoleToolSchema.parse(input);
-      return withCatalogDb((catalogDb) => jsonToolResult({ results: searchCatalogClasses(catalogDb, { query: parsed.role, limit: parsed.limit }) }));
+      return withCatalogDb((catalogDb) => jsonToolResult({ results: recommendCatalogRole(catalogDb, parsed.role, parsed.limit) }));
     }
   );
 
@@ -1077,9 +1173,7 @@ function registerCompositionCatalogTools(server: McpServer): void {
     },
     async (input) => {
       const parsed = catalogRoleToolSchema.parse(input);
-      return withCatalogDb((catalogDb) =>
-        jsonToolResult({ results: searchCatalogClasses(catalogDb, { query: parsed.role, tags: [parsed.role], limit: parsed.limit }) })
-      );
+      return withCatalogDb((catalogDb) => jsonToolResult({ results: recommendCatalogRole(catalogDb, parsed.role, parsed.limit) }));
     }
   );
 
@@ -1133,8 +1227,8 @@ function registerCompositionCatalogTools(server: McpServer): void {
         const classNames =
           parsed.classes && parsed.classes.length > 0
             ? parsed.classes
-            : searchCatalogClasses(catalogDb, { query: parsed.role, limit: 10 }).map((item) => String(item.class_name));
-        return jsonToolResult({ plan: createDataOnlyCompositionPlan(parsed.name, classNames, parsed.anchor) });
+            : recommendCatalogRole(catalogDb, parsed.role ?? "objective_terminal", 10).map((item) => String(item.class_name));
+        return jsonToolResult({ plan: createDataOnlyCompositionPlan(catalogDb, parsed.name, classNames, parsed.anchor, parsed.role) });
       });
     }
   );
@@ -1170,6 +1264,207 @@ function registerCompositionCatalogTools(server: McpServer): void {
   );
 }
 
+async function startCatalogScanTool(
+  state: ArmaMcpState,
+  parsed: z.infer<typeof catalogScanToolSchema>
+) {
+  return withCatalogDb(async (catalogDb) => {
+    const started = await dispatchCatalogAction(
+      state,
+      "catalog.scanStart",
+      {
+        scanId: parsed.scanId,
+        targets: parsed.targets,
+        chunkSize: parsed.chunkSize,
+        includeRaw: parsed.includeRaw
+      },
+      parsed.timeoutMs
+    );
+    const startPayload = asRecord(started.result);
+    const scanId = String(startPayload.scan_id ?? startPayload.scanId ?? parsed.scanId ?? `catalog-${Date.now()}`);
+    writeScanManifest(catalogDb, {
+      scanId,
+      gameVersion: stringOrNull(startPayload.game_version ?? startPayload.gameVersion),
+      worldName: stringOrNull(startPayload.world_name ?? startPayload.worldName),
+      loadedModsHash: stableHash(startPayload.loaded_mods ?? startPayload.loadedMods ?? []),
+      loadedAddonsHash: stableHash(startPayload.loaded_addons ?? startPayload.loadedAddons ?? []),
+      status: "running"
+    });
+    initializeScanTargets(catalogDb, scanId, parsed.targets);
+    const job: CatalogScanJob = {
+      scanId,
+      targets: parsed.targets,
+      chunkSize: parsed.chunkSize,
+      includeRaw: parsed.includeRaw,
+      maxChunks: parsed.maxChunks,
+      timeoutMs: parsed.timeoutMs,
+      cancelRequested: false
+    };
+    catalogScanJobs.set(scanId, job);
+    if (parsed.background) {
+      job.promise = Promise.resolve()
+        .then(() => runCatalogScanJob(state, job))
+        .finally(() => {
+          catalogScanJobs.delete(scanId);
+        });
+    }
+    return jsonToolResult({
+      ok: true,
+      scanId,
+      targets: parsed.targets,
+      estimatedWork: {
+        targetCount: parsed.targets.length,
+        chunkSize: parsed.chunkSize,
+        maxChunks: parsed.maxChunks
+      },
+      status: getScanProgress(catalogDb, scanId)
+    });
+  });
+}
+
+async function runCatalogScanJob(state: ArmaMcpState, job: CatalogScanJob): Promise<void> {
+  try {
+    while (!job.cancelRequested) {
+      const result = await pollCatalogScan(state, job.scanId, 1, 55_000, job.timeoutMs, job);
+      const status = String(asRecord(asRecord(result).scan).status ?? asRecord(asRecord(asRecord(result).scan).manifest).status ?? "");
+      if (["complete", "failed", "cancelled"].includes(status)) {
+        break;
+      }
+      const advanced = Number(asRecord(result).chunksProcessed ?? 0);
+      if (advanced <= 0) {
+        break;
+      }
+    }
+  } catch (error) {
+    await withCatalogDb((catalogDb) => {
+      markScanFinished(catalogDb, job.scanId, "failed", undefined, error instanceof Error ? error.message : String(error));
+    });
+  }
+}
+
+async function pollCatalogScan(
+  state: ArmaMcpState,
+  scanId: string,
+  maxChunks: number,
+  maxRuntimeMs: number,
+  timeoutMs: number,
+  job = catalogScanJobs.get(scanId)
+): Promise<Record<string, unknown>> {
+  const startedAt = Date.now();
+  let chunksProcessed = 0;
+  while (chunksProcessed < maxChunks && Date.now() - startedAt < maxRuntimeMs) {
+    if (job?.cancelRequested) {
+      await withCatalogDb((catalogDb) => markScanFinished(catalogDb, scanId, "cancelled"));
+      break;
+    }
+    const next = await withCatalogDb((catalogDb) => nextScanTarget(catalogDb, scanId));
+    if (!next) {
+      await finalizeCatalogScan(state, scanId, timeoutMs);
+      break;
+    }
+    if (next.nextChunkIndex >= (job?.maxChunks ?? 50_000)) {
+      await withCatalogDb((catalogDb) => {
+        writeScanTargetProgress(catalogDb, {
+          scanId,
+          target: next.target,
+          status: "failed",
+          error: `Catalog scan exceeded maxChunks while scanning ${next.target}`,
+          finishedAt: new Date().toISOString()
+        });
+        markScanFinished(catalogDb, scanId, "failed");
+      });
+      break;
+    }
+    const chunkResult = await dispatchCatalogAction(
+      state,
+      "catalog.scanChunk",
+      { scanId, configPath: next.target, chunkIndex: next.nextChunkIndex, chunkSize: job?.chunkSize ?? 100 },
+      timeoutMs
+    );
+    const chunk = asRecord(chunkResult.result) as CatalogChunk;
+    const isLast = chunk.is_last_chunk === true || chunk.isLastChunk === true;
+    const totalRecords = numberOrNull(chunk.total_records ?? chunk.totalRecords);
+    const rowsIngested = await withCatalogDb((catalogDb) => {
+      writeScanTargetProgress(catalogDb, {
+        scanId,
+        target: next.target,
+        targetIndex: next.targetIndex,
+        status: "running",
+        startedAt: new Date().toISOString()
+      });
+      const ingested = ingestCatalogChunk(catalogDb, scanId, chunk, { includeRaw: job?.includeRaw ?? false });
+      writeScanTargetProgress(catalogDb, {
+        scanId,
+        target: next.target,
+        status: isLast ? "complete" : "running",
+        nextChunkIndex: next.nextChunkIndex + 1,
+        totalRecords,
+        rowsIngestedDelta: ingested,
+        finishedAt: isLast ? new Date().toISOString() : null
+      });
+      return ingested;
+    });
+    chunksProcessed += 1;
+    if (rowsIngested === 0 && isLast && next.nextChunkIndex === 0) {
+      continue;
+    }
+  }
+  return withCatalogDb((catalogDb) => ({
+    ok: true,
+    chunksProcessed,
+    scan: getScanProgress(catalogDb, scanId)
+  }));
+}
+
+async function finalizeCatalogScan(state: ArmaMcpState, scanId: string, timeoutMs: number): Promise<Record<string, unknown>> {
+  return withCatalogDb(async (catalogDb) => {
+    const progress = getScanProgress(catalogDb, scanId);
+    if (!progress) {
+      return { ok: false, error: { code: "scan_not_found" } };
+    }
+    const targets = Array.isArray(progress.targets) ? (progress.targets as Record<string, unknown>[]) : [];
+    const incomplete = targets.filter((target) => !["complete", "failed", "cancelled"].includes(String(target.status)));
+    const counts = Object.fromEntries(targets.map((target) => [String(target.target), Number(target.rowsIngested ?? 0)]));
+    if (incomplete.length > 0) {
+      markScanFinished(catalogDb, scanId, "partial", counts);
+      return { ok: false, error: { code: "scan_incomplete", targets: incomplete.map((target) => target.target) }, scan: getScanProgress(catalogDb, scanId) };
+    }
+    const failed = targets.filter((target) => target.status === "failed");
+    const cancelled = targets.filter((target) => target.status === "cancelled");
+    if (failed.length === 0 && cancelled.length === 0) {
+      await dispatchCatalogAction(state, "catalog.scanFinish", { scanId, classCounts: counts }, timeoutMs);
+    }
+    markScanFinished(catalogDb, scanId, failed.length > 0 ? "failed" : cancelled.length > 0 ? "cancelled" : "complete", counts);
+    return { ok: failed.length === 0 && cancelled.length === 0, counts, scan: getScanProgress(catalogDb, scanId) };
+  });
+}
+
+function nextScanTarget(catalogDb: ReturnType<typeof openCatalogDb>, scanId: string): { target: string; targetIndex: number; nextChunkIndex: number } | null {
+  const manifest = getScanManifest(catalogDb, scanId);
+  if (!manifest || ["complete", "failed", "cancelled"].includes(String(manifest.status))) {
+    return null;
+  }
+  if (manifest.status === "stale") {
+    repairStaleScan(catalogDb, scanId);
+  }
+  const row = catalogDb.db
+    .prepare(
+      `SELECT target, target_index AS targetIndex, next_chunk_index AS nextChunkIndex
+       FROM scan_targets
+       WHERE scan_id = ? AND status IN ('pending', 'running')
+       ORDER BY target_index, target
+       LIMIT 1`
+    )
+    .get(scanId) as { target: string; targetIndex: number; nextChunkIndex: number } | undefined;
+  return row ?? null;
+}
+
+function latestScanId(catalogDb: ReturnType<typeof openCatalogDb>): string | undefined {
+  const latest = getCatalogStatus(catalogDb).latestScan as Record<string, unknown> | null;
+  const manifest = latest?.manifest as Record<string, unknown> | undefined;
+  return typeof manifest?.scanId === "string" ? manifest.scanId : undefined;
+}
+
 async function measureCatalogClass(
   catalogDb: ReturnType<typeof openCatalogDb>,
   state: ArmaMcpState,
@@ -1180,6 +1475,9 @@ async function measureCatalogClass(
   const catalogClass = getCatalogClass(catalogDb, className);
   if (!catalogClass) {
     return { className, status: "failed", error: "class_not_in_catalog" };
+  }
+  if (!force && catalogClass.measurement_status === "failed") {
+    return { className, status: "skipped", error: "previous_measurement_failed" };
   }
   if (!force && !isSafeToMeasure(catalogClass)) {
     writeClassMeasurement(catalogDb, className, {
@@ -1207,15 +1505,46 @@ async function measureCatalogClass(
   return { className, status, measurement };
 }
 
+function bucketMeasurementResult(
+  result: Record<string, unknown>,
+  measured: Record<string, unknown>[],
+  skipped: Record<string, unknown>[],
+  failed: Record<string, unknown>[]
+): void {
+  const status = String(result.status ?? "");
+  if (status === "measured") {
+    measured.push(result);
+  } else if (status === "skipped") {
+    skipped.push(result);
+  } else {
+    failed.push(result);
+  }
+}
+
 function isSafeToMeasure(catalogClass: Record<string, unknown>): boolean {
   const kind = String(catalogClass.kind ?? "");
   const subkind = String(catalogClass.subkind ?? "");
+  const haystack = [
+    catalogClass.class_name,
+    catalogClass.display_name,
+    catalogClass.simulation,
+    catalogClass.editor_category,
+    catalogClass.editor_subcategory,
+    catalogClass.vehicle_class,
+    ...(Array.isArray(catalogClass.tags) ? catalogClass.tags : [])
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
   const scope = typeof catalogClass.scope === "number" ? catalogClass.scope : Number(catalogClass.scope ?? 1);
   const modelPath = String(catalogClass.model_path ?? "");
   if (scope <= 0 || !modelPath) {
     return false;
   }
-  if (["unit", "vehicle", "ammo", "module"].includes(kind)) {
+  if (["unit", "vehicle", "ammo", "module", "logic"].includes(kind)) {
+    return false;
+  }
+  if (haystack.match(/\b(mine|ied|explosive|grenade|rocket|missile|submunition|module|logic)\b/)) {
     return false;
   }
   return ["prop", "structure", "fortification", "supply", "decor"].includes(kind) || ["terminal", "console"].includes(subkind);
@@ -1266,7 +1595,63 @@ function safePathSegment(input: string): string {
   return input.replace(/[^A-Za-z0-9_.-]+/g, "_").slice(0, 160) || "class";
 }
 
-function createDataOnlyCompositionPlan(name: string, classNames: string[], anchor: { positionATL: [number, number, number]; dir: number }) {
+function recommendCatalogRole(catalogDb: ReturnType<typeof openCatalogDb>, role: string, limit: number): Record<string, unknown>[] {
+  const roleTags = roleToTags(role);
+  const seen = new Set<string>();
+  const results: Record<string, unknown>[] = [];
+  for (const tag of roleTags) {
+    for (const item of searchCatalogClasses(catalogDb, { tags: [tag], limit })) {
+      const className = String(item.class_name);
+      if (!seen.has(className)) {
+        seen.add(className);
+        results.push({ ...item, confidence: tag === role ? 0.9 : 0.75, matched_role: tag });
+      }
+      if (results.length >= limit) {
+        return results;
+      }
+    }
+  }
+  for (const item of searchCatalogClasses(catalogDb, { query: role, limit })) {
+    const className = String(item.class_name);
+    if (!seen.has(className)) {
+      seen.add(className);
+      results.push({ ...item, confidence: 0.55, matched_role: "text_search" });
+    }
+    if (results.length >= limit) {
+      break;
+    }
+  }
+  return results;
+}
+
+function roleToTags(role: string): string[] {
+  const normalized = role.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const aliases: Record<string, string[]> = {
+    console: ["command_terminal", "objective_terminal", "terminal"],
+    terminal: ["command_terminal", "objective_terminal", "terminal"],
+    bunker: ["bunker", "fortification"],
+    sandbag: ["cover_low", "wall_segment", "fortification"],
+    medical: ["medical_crate", "supply"],
+    ammo: ["ammo_crate", "supply"],
+    droid: ["cis", "infantry_unit"],
+    cis: ["cis"],
+    republic: ["republic"],
+    wall: ["wall_segment", "fortification"],
+    gate: ["gate", "wall_segment"],
+    task: ["module_task", "module"],
+    respawn: ["module_respawn", "module"],
+    zeus: ["module_zeus", "module"]
+  };
+  return [normalized, ...(aliases[normalized] ?? [])].filter((tag, index, tags) => tags.indexOf(tag) === index);
+}
+
+function createDataOnlyCompositionPlan(
+  catalogDb: ReturnType<typeof openCatalogDb>,
+  name: string,
+  classNames: string[],
+  anchor: { positionATL: [number, number, number]; dir: number },
+  role?: string
+) {
   return {
     schemaVersion: 1,
     name,
@@ -1275,13 +1660,37 @@ function createDataOnlyCompositionPlan(name: string, classNames: string[], ancho
     operations: classNames.map((className, index) => ({
       op: "create_entity",
       clientRef: `catalog_${index + 1}`,
+      role: role ?? "catalog_asset",
       type: "Object",
       className,
+      reason: compositionReason(catalogDb, className, role),
+      dimensionsUsed: catalogDimensions(catalogDb, className),
       transform: {
         positionATL: [index * 2, 0, 0],
         dir: 0
       }
     }))
+  };
+}
+
+function compositionReason(catalogDb: ReturnType<typeof openCatalogDb>, className: string, role?: string): string {
+  const catalogClass = getCatalogClass(catalogDb, className);
+  const displayName = String(catalogClass?.display_name ?? className);
+  const tags = Array.isArray(catalogClass?.tags) ? catalogClass.tags.join(", ") : "";
+  return role
+    ? `Selected ${displayName} for role ${role}${tags ? ` using tags ${tags}` : ""}.`
+    : `Selected ${displayName} from cached catalog data${tags ? ` using tags ${tags}` : ""}.`;
+}
+
+function catalogDimensions(catalogDb: ReturnType<typeof openCatalogDb>, className: string): Record<string, unknown> | null {
+  const catalogClass = getCatalogClass(catalogDb, className);
+  if (!catalogClass || catalogClass.width_m === null || catalogClass.depth_m === null || catalogClass.height_m === null) {
+    return null;
+  }
+  return {
+    width_m: catalogClass.width_m,
+    depth_m: catalogClass.depth_m,
+    height_m: catalogClass.height_m
   };
 }
 

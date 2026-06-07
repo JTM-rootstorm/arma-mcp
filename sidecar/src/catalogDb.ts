@@ -21,7 +21,25 @@ export type ScanManifestInput = {
   loadedAddonsHash: string;
   classCounts?: Record<string, number>;
   finishedAt?: string | null;
-  status?: "running" | "complete" | "failed";
+  status?: ScanStatus;
+};
+
+export type ScanStatus = "pending" | "running" | "partial" | "stale" | "complete" | "failed" | "cancelled";
+
+export type ScanTargetStatus = "pending" | "running" | "complete" | "failed" | "cancelled";
+
+export type ScanTargetProgressInput = {
+  scanId: string;
+  target: string;
+  targetIndex?: number;
+  status?: ScanTargetStatus;
+  nextChunkIndex?: number;
+  totalRecords?: number | null;
+  rowsIngestedDelta?: number;
+  rowsIngested?: number;
+  error?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
 };
 
 export type CatalogClassInput = {
@@ -87,6 +105,7 @@ export function openCatalogDb(dbPath = DEFAULT_CATALOG_DB_PATH): CatalogDb {
 }
 
 export function getCatalogStatus(catalogDb: CatalogDb): Record<string, unknown> {
+  markStaleScans(catalogDb);
   const classCount = scalarCount(catalogDb, "classes");
   const measurementCount = scalarCount(catalogDb, "class_measurements");
   const screenshotCount = scalarCount(catalogDb, "class_screenshots");
@@ -94,11 +113,17 @@ export function getCatalogStatus(catalogDb: CatalogDb): Record<string, unknown> 
   return {
     path: catalogDb.path,
     schemaVersion: CATALOG_SCHEMA_VERSION,
-    latestScan,
+    cacheState: latestScan ? scanCacheState(catalogDb, String(latestScan.scanId)) : "empty",
+    latestScan: latestScan ? getScanProgress(catalogDb, String(latestScan.scanId)) : null,
     counts: {
       classes: classCount,
       measurements: measurementCount,
       screenshots: screenshotCount
+    },
+    visualInspection: {
+      screenshotCapture: false,
+      status: "unsupported",
+      code: "screenshot_capture_not_implemented"
     }
   };
 }
@@ -161,6 +186,7 @@ export function searchCatalogClasses(catalogDb: CatalogDb, input: CatalogSearchI
         classes.subkind,
         classes.tags_json AS tagsJson,
         COALESCE((SELECT json_group_array(tag) FROM class_visual_tags WHERE class_visual_tags.class_name = classes.class_name), '[]') AS visualTagsJson,
+        classes.source_addon AS sourceAddon,
         classes.source_mod_guess AS sourceMod,
         classes.editor_category AS editorCategory,
         classes.editor_subcategory AS editorSubcategory,
@@ -175,6 +201,38 @@ export function searchCatalogClasses(catalogDb: CatalogDb, input: CatalogSearchI
     )
     .all(...values);
   return rows.map((row) => formatCatalogSearchRow(row as CatalogSearchRow));
+}
+
+export function getCatalogSearchDiagnostics(
+  catalogDb: CatalogDb,
+  input: CatalogSearchInput,
+  resultCount: number
+): Record<string, unknown> {
+  const latestScan = getLatestScanManifest(catalogDb);
+  const relevantTargets = relevantSearchTargets(input);
+  const progress = latestScan ? getScanProgress(catalogDb, String(latestScan.scanId)) : null;
+  const targets = progress && Array.isArray(progress.targets) ? (progress.targets as Record<string, unknown>[]) : [];
+  const targetStates = targets
+    .filter((target) => relevantTargets.includes(String(target.target)))
+    .map((target) => ({
+      target: target.target,
+      status: target.status,
+      nextChunkIndex: target.nextChunkIndex,
+      rowsIngested: target.rowsIngested,
+      totalRecords: target.totalRecords
+    }));
+  const latestStatus = String((progress?.manifest as Record<string, unknown> | undefined)?.status ?? "");
+  return {
+    resultCount,
+    latestScanStatus: latestStatus || null,
+    cacheState: latestScan ? scanCacheState(catalogDb, String(latestScan.scanId)) : "empty",
+    relevantTargets,
+    targetStates,
+    hint:
+      resultCount === 0 && ["", "pending", "running", "partial", "stale"].includes(latestStatus)
+        ? "The catalog may be incomplete. Poll, resume/repair the scan, or use live asset search while cache data is partial."
+        : null
+  };
 }
 
 export function getCatalogClass(catalogDb: CatalogDb, className: string): Record<string, unknown> | null {
@@ -352,6 +410,7 @@ export function findCatalogByDimensions(
         classes.subkind,
         classes.tags_json AS tagsJson,
         COALESCE((SELECT json_group_array(tag) FROM class_visual_tags WHERE class_visual_tags.class_name = classes.class_name), '[]') AS visualTagsJson,
+        classes.source_addon AS sourceAddon,
         classes.source_mod_guess AS sourceMod,
         classes.editor_category AS editorCategory,
         classes.editor_subcategory AS editorSubcategory,
@@ -470,6 +529,28 @@ export function getLatestScanManifest(catalogDb: CatalogDb): Record<string, unkn
   );
 }
 
+export function getScanManifest(catalogDb: CatalogDb, scanId: string): Record<string, unknown> | null {
+  return (
+    catalogDb.db
+      .prepare(
+        `SELECT
+          scan_id AS scanId,
+          schema_version AS schemaVersion,
+          game_version AS gameVersion,
+          world_name AS worldName,
+          loaded_mods_hash AS loadedModsHash,
+          loaded_addons_hash AS loadedAddonsHash,
+          class_counts_json AS classCountsJson,
+          started_at AS startedAt,
+          finished_at AS finishedAt,
+          status
+        FROM scan_manifests
+        WHERE scan_id = ?`
+      )
+      .get(scanId) ?? null
+  );
+}
+
 export function writeScanManifest(catalogDb: CatalogDb, manifest: ScanManifestInput): void {
   catalogDb.db
     .prepare(
@@ -505,6 +586,197 @@ export function writeScanManifest(catalogDb: CatalogDb, manifest: ScanManifestIn
       manifest.finishedAt ?? null,
       manifest.status ?? "running"
     );
+}
+
+export function initializeScanTargets(catalogDb: CatalogDb, scanId: string, targets: string[]): void {
+  const insert = catalogDb.db.prepare(
+    `INSERT INTO scan_targets (scan_id, target, target_index, status)
+     VALUES (?, ?, ?, 'pending')
+     ON CONFLICT(scan_id, target) DO UPDATE SET
+       target_index = excluded.target_index,
+       status = CASE WHEN scan_targets.status IN ('complete', 'failed', 'cancelled') THEN scan_targets.status ELSE excluded.status END,
+       updated_at = CURRENT_TIMESTAMP`
+  );
+  catalogDb.db.exec("BEGIN;");
+  try {
+    targets.forEach((target, index) => insert.run(scanId, target, index));
+    catalogDb.db.exec("COMMIT;");
+  } catch (error) {
+    catalogDb.db.exec("ROLLBACK;");
+    throw error;
+  }
+}
+
+export function writeScanTargetProgress(catalogDb: CatalogDb, input: ScanTargetProgressInput): void {
+  catalogDb.db
+    .prepare(
+      `INSERT INTO scan_targets (
+        scan_id,
+        target,
+        target_index,
+        status,
+        next_chunk_index,
+        total_records,
+        rows_ingested,
+        error,
+        started_at,
+        finished_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(scan_id, target) DO UPDATE SET
+        target_index = COALESCE(excluded.target_index, scan_targets.target_index),
+        status = COALESCE(excluded.status, scan_targets.status),
+        next_chunk_index = COALESCE(excluded.next_chunk_index, scan_targets.next_chunk_index),
+        total_records = COALESCE(excluded.total_records, scan_targets.total_records),
+        rows_ingested = CASE
+          WHEN ? IS NOT NULL THEN scan_targets.rows_ingested + ?
+          WHEN ? IS NOT NULL THEN ?
+          ELSE scan_targets.rows_ingested
+        END,
+        error = excluded.error,
+        started_at = COALESCE(scan_targets.started_at, excluded.started_at),
+        finished_at = COALESCE(excluded.finished_at, scan_targets.finished_at),
+        updated_at = CURRENT_TIMESTAMP`
+    )
+    .run(
+      input.scanId,
+      input.target,
+      input.targetIndex ?? 0,
+      input.status ?? "pending",
+      input.nextChunkIndex ?? 0,
+      input.totalRecords ?? null,
+      input.rowsIngested ?? input.rowsIngestedDelta ?? 0,
+      input.error ?? null,
+      input.startedAt ?? null,
+      input.finishedAt ?? null,
+      input.rowsIngestedDelta ?? null,
+      input.rowsIngestedDelta ?? null,
+      input.rowsIngested ?? null,
+      input.rowsIngested ?? null
+    );
+}
+
+export function getScanProgress(catalogDb: CatalogDb, scanId: string): Record<string, unknown> | null {
+  const manifest = getScanManifest(catalogDb, scanId);
+  if (!manifest) {
+    return null;
+  }
+  const targets = catalogDb.db
+    .prepare(
+      `SELECT
+        target,
+        target_index AS targetIndex,
+        status,
+        next_chunk_index AS nextChunkIndex,
+        total_records AS totalRecords,
+        rows_ingested AS rowsIngested,
+        error,
+        started_at AS startedAt,
+        finished_at AS finishedAt,
+        updated_at AS updatedAt
+       FROM scan_targets
+       WHERE scan_id = ?
+       ORDER BY target_index, target`
+    )
+    .all(scanId)
+    .map((row) => ({ ...(row as Record<string, unknown>) }));
+  const runningTarget = targets.find((target) => target.status === "running") ?? targets.find((target) => target.status === "pending") ?? null;
+  const totalRecords = targets.reduce((sum, target) => sum + Number(target.totalRecords ?? 0), 0);
+  const rowsIngested = targets.reduce((sum, target) => sum + Number(target.rowsIngested ?? 0), 0);
+  const errors = targets.filter((target) => target.error).map((target) => ({ target: target.target, error: target.error }));
+  return {
+    manifest,
+    status: manifest.status,
+    currentTarget: runningTarget ? runningTarget.target : null,
+    nextChunkIndex: runningTarget ? runningTarget.nextChunkIndex : null,
+    totalRecords,
+    rowsIngested,
+    targets,
+    errors,
+    warnings: buildScanWarnings(String(manifest.status), targets)
+  };
+}
+
+export function markScanFinished(catalogDb: CatalogDb, scanId: string, status: ScanStatus, classCounts?: Record<string, number>, error?: string): void {
+  const manifest = getScanManifest(catalogDb, scanId);
+  if (!manifest) {
+    return;
+  }
+  catalogDb.db
+    .prepare(
+      `UPDATE scan_manifests
+       SET status = ?,
+           class_counts_json = COALESCE(?, class_counts_json),
+           finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP)
+       WHERE scan_id = ?`
+    )
+    .run(status, classCounts ? JSON.stringify(classCounts) : null, scanId);
+  if (error) {
+    catalogDb.db
+      .prepare(
+        `UPDATE scan_targets
+         SET status = 'failed', error = COALESCE(error, ?), finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
+         WHERE scan_id = ? AND status IN ('pending', 'running')`
+      )
+      .run(error, scanId);
+  } else if (status === "cancelled") {
+    catalogDb.db
+      .prepare(
+        `UPDATE scan_targets
+         SET status = 'cancelled', finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
+         WHERE scan_id = ? AND status IN ('pending', 'running')`
+      )
+      .run(scanId);
+  } else if (status === "failed") {
+    catalogDb.db
+      .prepare(
+        `UPDATE scan_targets
+         SET status = 'failed', finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
+         WHERE scan_id = ? AND status IN ('pending', 'running')`
+      )
+      .run(scanId);
+  }
+}
+
+export function markStaleScans(catalogDb: CatalogDb, staleAfterMs = 15 * 60 * 1000): number {
+  const cutoff = new Date(Date.now() - staleAfterMs).toISOString().slice(0, 19).replace("T", " ");
+  const result = catalogDb.db
+    .prepare(
+      `UPDATE scan_manifests
+       SET status = 'stale'
+       WHERE status = 'running'
+         AND scan_id IN (
+           SELECT scan_manifests.scan_id
+           FROM scan_manifests
+           LEFT JOIN scan_targets ON scan_targets.scan_id = scan_manifests.scan_id
+           GROUP BY scan_manifests.scan_id
+           HAVING COALESCE(MAX(scan_targets.updated_at), scan_manifests.started_at) < ?
+         )`
+    )
+    .run(cutoff);
+  return Number(result.changes);
+}
+
+export function repairStaleScan(catalogDb: CatalogDb, scanId: string): Record<string, unknown> {
+  const manifest = getScanManifest(catalogDb, scanId);
+  if (!manifest) {
+    return { ok: false, error: "scan_not_found" };
+  }
+  const targets = getScanProgress(catalogDb, scanId)?.targets as Record<string, unknown>[] | undefined;
+  const hasIncompleteTargets = (targets ?? []).some((target) => !["complete", "failed", "cancelled"].includes(String(target.status)));
+  if (manifest.status === "running" || manifest.status === "stale") {
+    catalogDb.db
+      .prepare("UPDATE scan_manifests SET status = ? WHERE scan_id = ?")
+      .run(hasIncompleteTargets ? "partial" : "complete", scanId);
+    catalogDb.db
+      .prepare(
+        `UPDATE scan_targets
+         SET status = 'pending', updated_at = CURRENT_TIMESTAMP
+         WHERE scan_id = ? AND status = 'running'`
+      )
+      .run(scanId);
+  }
+  return { ok: true, scan: getScanProgress(catalogDb, scanId) };
 }
 
 export function upsertCatalogClass(catalogDb: CatalogDb, catalogClass: CatalogClassInput): void {
@@ -727,6 +999,7 @@ type CatalogSearchRow = {
   subkind: string | null;
   tagsJson: string;
   visualTagsJson: string;
+  sourceAddon: string | null;
   sourceMod: string | null;
   editorCategory: string | null;
   editorSubcategory: string | null;
@@ -743,6 +1016,7 @@ function formatCatalogSearchRow(row: CatalogSearchRow): Record<string, unknown> 
     subkind: row.subkind,
     tags: safeJsonArray(row.tagsJson),
     visual_tags: safeJsonArray(row.visualTagsJson),
+    source_addon: row.sourceAddon,
     source_mod: row.sourceMod,
     editor_category: row.editorCategory,
     editor_subcategory: row.editorSubcategory,
@@ -770,6 +1044,62 @@ function formatCatalogClassRow(catalogDb: CatalogDb, row: Record<string, unknown
   };
 }
 
+function scanCacheState(catalogDb: CatalogDb, scanId: string): ScanStatus | "empty" {
+  const progress = getScanProgress(catalogDb, scanId);
+  const status = String((progress?.manifest as Record<string, unknown> | undefined)?.status ?? "partial") as ScanStatus;
+  if (["complete", "failed", "cancelled", "stale"].includes(status)) {
+    return status;
+  }
+  const targets = Array.isArray(progress?.targets) ? (progress.targets as Record<string, unknown>[]) : [];
+  if (targets.length === 0) {
+    return status;
+  }
+  if (targets.every((target) => target.status === "complete")) {
+    return "complete";
+  }
+  if (targets.some((target) => target.status === "running")) {
+    return "running";
+  }
+  if (targets.some((target) => Number(target.rowsIngested ?? 0) > 0 || target.status === "complete")) {
+    return "partial";
+  }
+  return status;
+}
+
+function relevantSearchTargets(input: CatalogSearchInput): string[] {
+  const kind = input.kind?.toLowerCase();
+  if (kind === "weapon") {
+    return ["CfgWeapons"];
+  }
+  if (kind === "magazine") {
+    return ["CfgMagazines"];
+  }
+  if (kind === "ammo") {
+    return ["CfgAmmo"];
+  }
+  if (kind === "group") {
+    return ["CfgGroups"];
+  }
+  return ["CfgVehicles"];
+}
+
+function buildScanWarnings(status: string, targets: Record<string, unknown>[]): string[] {
+  const warnings: string[] = [];
+  if (status === "stale") {
+    warnings.push("scan_stale_no_recent_progress");
+  }
+  if (status === "partial") {
+    warnings.push("scan_partial_resume_or_finalize_needed");
+  }
+  if (targets.some((target) => target.status === "failed")) {
+    warnings.push("one_or_more_targets_failed");
+  }
+  if (targets.some((target) => target.status === "cancelled")) {
+    warnings.push("one_or_more_targets_cancelled");
+  }
+  return warnings;
+}
+
 const CATALOG_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
@@ -788,6 +1118,21 @@ CREATE TABLE IF NOT EXISTS scan_manifests (
     started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     finished_at TEXT,
     status TEXT NOT NULL DEFAULT 'running'
+);
+
+CREATE TABLE IF NOT EXISTS scan_targets (
+    scan_id TEXT NOT NULL REFERENCES scan_manifests(scan_id) ON DELETE CASCADE,
+    target TEXT NOT NULL,
+    target_index INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    next_chunk_index INTEGER NOT NULL DEFAULT 0,
+    total_records INTEGER,
+    rows_ingested INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    started_at TEXT,
+    finished_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (scan_id, target)
 );
 
 CREATE TABLE IF NOT EXISTS mods (

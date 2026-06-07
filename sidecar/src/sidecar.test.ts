@@ -3,22 +3,29 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { generateCheckpointPlan } from "./checkpointPlanner.js";
+import { ingestCatalogChunk, normalizeCatalogRecord } from "./catalog.js";
 import {
   closeCatalogDb,
   ensureCatalogSchema,
   addCatalogVisualTag,
   findCatalogByDimensions,
+  getCatalogSearchDiagnostics,
   getCatalogClass,
   getLatestScanManifest,
+  getScanProgress,
+  initializeScanTargets,
   listCatalogCategories,
   listCatalogFactions,
   listClassesMissingMeasurements,
+  markStaleScans,
   openCatalogDb,
+  repairStaleScan,
   searchCatalogClasses,
   upsertCatalogClass,
   upsertClassTags,
   updateFtsIndex,
   writeClassMeasurement,
+  writeScanTargetProgress,
   writeScanManifest
 } from "./catalogDb.js";
 import { generateAaSite, generateCoverLine, generateLz, generatePropWall, generateRoadCheckpoint, generateSmallOutpost } from "./generators.js";
@@ -145,6 +152,113 @@ describe("catalog database", () => {
     } finally {
       closeCatalogDb(catalog);
     }
+  });
+
+  it("tracks scan targets, diagnostics, and stale repair", () => {
+    const catalog = openCatalogDb(tempCatalogPath());
+    try {
+      ensureCatalogSchema(catalog);
+      writeScanManifest(catalog, {
+        scanId: "scan_progress",
+        loadedModsHash: "mods",
+        loadedAddonsHash: "addons",
+        status: "running"
+      });
+      initializeScanTargets(catalog, "scan_progress", ["CfgVehicles", "CfgWeapons"]);
+      writeScanTargetProgress(catalog, {
+        scanId: "scan_progress",
+        target: "CfgVehicles",
+        status: "running",
+        nextChunkIndex: 3,
+        totalRecords: 500,
+        rowsIngestedDelta: 120,
+        startedAt: "2026-06-07T00:00:00.000Z"
+      });
+
+      expect(getScanProgress(catalog, "scan_progress")).toMatchObject({
+        currentTarget: "CfgVehicles",
+        rowsIngested: 120
+      });
+      expect((getScanProgress(catalog, "scan_progress")?.targets as Record<string, unknown>[])[0]).toMatchObject({
+        target: "CfgVehicles",
+        status: "running",
+        nextChunkIndex: 3
+      });
+      const diagnostics = getCatalogSearchDiagnostics(catalog, { query: "console", kind: "prop" }, 0);
+      expect(diagnostics).toMatchObject({
+        resultCount: 0,
+        latestScanStatus: "running",
+        relevantTargets: ["CfgVehicles"]
+      });
+      expect(markStaleScans(catalog, 1)).toBeGreaterThanOrEqual(0);
+      const repaired = repairStaleScan(catalog, "scan_progress");
+      expect(repaired).toMatchObject({ ok: true });
+      expect(getScanProgress(catalog, "scan_progress")?.manifest).toMatchObject({ status: "partial" });
+    } finally {
+      closeCatalogDb(catalog);
+    }
+  });
+
+  it("filters noisy vehicle rows and tags module roles", () => {
+    const catalog = openCatalogDb(tempCatalogPath());
+    try {
+      ensureCatalogSchema(catalog);
+      writeScanManifest(catalog, {
+        scanId: "scan_ingest",
+        loadedModsHash: "mods",
+        loadedAddonsHash: "addons",
+        status: "running"
+      });
+      const ingested = ingestCatalogChunk(catalog, "scan_ingest", {
+        config_path: "CfgVehicles",
+        records: [
+          {
+            class_name: "HitPoints",
+            display_name: "",
+            scope: 0,
+            raw_config: {}
+          },
+          {
+            class_name: "ModuleFuel_F",
+            display_name: "Fuel Module",
+            scope: 2,
+            editor_category: "EdCat_Modules",
+            editor_subcategory: "EdSubcat_Sites",
+            simulation: "logic",
+            model_path: "\\a3\\modules_f\\empty.p3d",
+            parents: ["Module_F", "Logic"]
+          },
+          {
+            class_name: "Land_Command_Console_F",
+            display_name: "Command Console",
+            scope: 2,
+            editor_category: "EdCat_Props",
+            editor_subcategory: "EdSubcat_Electronics",
+            model_path: "\\a3\\props_f\\console.p3d"
+          }
+        ]
+      });
+      expect(ingested).toBe(2);
+      expect(getCatalogClass(catalog, "HitPoints")).toBeNull();
+      expect(getCatalogClass(catalog, "ModuleFuel_F")).toMatchObject({ kind: "module" });
+      expect(searchCatalogClasses(catalog, { tags: ["command_terminal"] })[0]).toMatchObject({
+        class_name: "Land_Command_Console_F"
+      });
+    } finally {
+      closeCatalogDb(catalog);
+    }
+  });
+
+  it("normalizes modules before vehicle heuristics", () => {
+    expect(
+      normalizeCatalogRecord("scan_normalize", "CfgVehicles", {
+        class_name: "ModuleAmmo_F",
+        display_name: "Vehicle Ammo Module",
+        simulation: "logic",
+        editor_category: "EdCat_Modules",
+        parents: ["Module_F", "Logic"]
+      })?.catalogClass
+    ).toMatchObject({ kind: "module" });
   });
 });
 
