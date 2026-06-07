@@ -121,9 +121,10 @@ export function getCatalogStatus(catalogDb: CatalogDb): Record<string, unknown> 
       screenshots: screenshotCount
     },
     visualInspection: {
-      screenshotCapture: false,
-      status: "unsupported",
-      code: "screenshot_capture_not_implemented"
+      screenshotCapture: true,
+      status: "implemented",
+      cacheMirroring: Boolean(process.env.ARMA_MCP_SCREENSHOT_SOURCE_DIR),
+      sourceDirEnv: "ARMA_MCP_SCREENSHOT_SOURCE_DIR"
     }
   };
 }
@@ -463,6 +464,44 @@ export function listClassScreenshots(catalogDb: CatalogDb, className: string): R
     .map((row) => ({ ...(row as Record<string, unknown>) }));
 }
 
+export function insertClassScreenshot(
+  catalogDb: CatalogDb,
+  input: {
+    className: string;
+    inspectionRunId?: number | null;
+    angle: string;
+    filePath: string;
+    cameraPosition?: unknown[];
+    cameraTarget?: unknown[];
+  }
+): number {
+  const result = catalogDb.db
+    .prepare(
+      `INSERT INTO class_screenshots (
+        class_name,
+        inspection_run_id,
+        angle,
+        file_path,
+        camera_position_json,
+        camera_target_json
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(class_name, angle, file_path) DO UPDATE SET
+        inspection_run_id = excluded.inspection_run_id,
+        camera_position_json = excluded.camera_position_json,
+        camera_target_json = excluded.camera_target_json`
+    )
+    .run(
+      input.className,
+      input.inspectionRunId ?? null,
+      input.angle,
+      input.filePath,
+      JSON.stringify(input.cameraPosition ?? []),
+      JSON.stringify(input.cameraTarget ?? [])
+    );
+  updateFtsIndex(catalogDb, input.className);
+  return Number(result.lastInsertRowid);
+}
+
 export function createVisualInspectionRun(
   catalogDb: CatalogDb,
   input: { className: string; status: string; error?: string | null; angles?: string[]; screenshotDir?: string; resolution?: [number, number] }
@@ -482,6 +521,16 @@ export function createVisualInspectionRun(
       input.status === "running" ? null : new Date().toISOString()
     );
   return Number(result.lastInsertRowid);
+}
+
+export function finishVisualInspectionRun(catalogDb: CatalogDb, runId: number, status: string, error?: string | null): void {
+  catalogDb.db
+    .prepare(
+      `UPDATE visual_inspection_runs
+       SET status = ?, error = ?, finished_at = CURRENT_TIMESTAMP
+       WHERE id = ?`
+    )
+    .run(status, error ?? null, runId);
 }
 
 export function closeCatalogDb(catalogDb: CatalogDb): void {

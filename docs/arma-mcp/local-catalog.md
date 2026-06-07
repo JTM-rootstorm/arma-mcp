@@ -17,7 +17,7 @@ Generated cache files are local artifacts and must not be committed:
 *.sqlite-shm
 ```
 
-Future screenshot capture output should use:
+Screenshot capture output uses:
 
 ```text
 .mcp-cache/arma/screenshots/
@@ -78,7 +78,31 @@ nested helper classes such as hitpoints, damage/effect internals, animation
 source internals, and glass fragments. Use `includeRaw=true` on scan start only
 when raw full config capture is needed.
 
-Visual screenshot capture is explicitly unsupported in the current addon build.
-`arma.catalog.status` reports `visualInspection.status=unsupported`, and visual
-inspection tools return `screenshot_capture_not_implemented` while still
-allowing manual visual tags to be stored in the cache.
+The addon captures PNGs with Arma's `screenshot` command, which writes under the
+active Arma profile `Screenshots` directory. The sidecar records the profile
+relative path returned by Arma and can mirror PNG files into `.mcp-cache` when
+this environment variable points to that profile screenshot directory:
+
+```text
+ARMA_MCP_SCREENSHOT_SOURCE_DIR=/path/to/Arma 3 - Other Profiles/<profile>/Screenshots
+```
+
+Useful tools:
+
+```text
+arma.camera.createPreviewScene
+arma.camera.captureClassAngles
+arma.camera.captureCurrentView
+arma.camera.destroyPreviewScene
+arma.visual.inspectClass
+arma.visual.getScreenshots
+arma.visual.addTag
+arma.visual.findByVisualTags
+```
+
+`arma.visual.inspectClass` creates a temporary local preview object, drives an
+internal camera around it, captures requested angles, stores screenshot metadata
+in `class_screenshots`, and returns both the Arma profile-relative path and the
+local cache path when mirroring succeeds. If mirroring is not configured, the
+tool still captures through Arma and returns a `copy_warning` telling the agent
+which environment variable is missing.

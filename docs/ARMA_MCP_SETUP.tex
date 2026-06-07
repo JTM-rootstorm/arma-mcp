@@ -24,7 +24,7 @@
 \titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.7em}{}
 
 \newcommand{\code}[1]{\texttt{#1}}
-\newcommand{\projectroot}{\code{/home/mike/Documents/Programming/arma-mcp}}
+\newcommand{\projectroot}{\code{/path/to/arma-mcp}}
 
 \DefineVerbatimEnvironment{commandblock}{Verbatim}{
   fontsize=\small,
@@ -107,7 +107,7 @@ The relevant project paths are:
 From the repository root:
 
 \begin{commandblock}
-cd /home/mike/Documents/Programming/arma-mcp/sidecar
+cd /path/to/arma-mcp/sidecar
 npm install
 npm run build
 \end{commandblock}
@@ -115,7 +115,7 @@ npm run build
 To run the sidecar tests:
 
 \begin{commandblock}
-cd /home/mike/Documents/Programming/arma-mcp/sidecar
+cd /path/to/arma-mcp/sidecar
 npm run validate
 \end{commandblock}
 
@@ -147,7 +147,7 @@ that value is only a placeholder.
 First build the sidecar:
 
 \begin{commandblock}
-cd /home/mike/Documents/Programming/arma-mcp/sidecar
+cd /path/to/arma-mcp/sidecar
 npm run build
 \end{commandblock}
 
@@ -157,7 +157,7 @@ local value:
 \begin{commandblock}
 [mcp_servers.arma-mcp]
 command = "node"
-args = ["/home/mike/Documents/Programming/arma-mcp/sidecar/dist/index.js"]
+args = ["/path/to/arma-mcp/sidecar/dist/index.js"]
 env = { ARMA_MCP_TOKEN = "replace-with-a-local-random-token" }
 startup_timeout_sec = 10
 tool_timeout_sec = 60
@@ -168,7 +168,7 @@ Alternatively, register it with the Codex CLI:
 \begin{commandblock}
 codex mcp add arma-mcp \
   --env ARMA_MCP_TOKEN=replace-with-a-local-random-token \
-  -- node /home/mike/Documents/Programming/arma-mcp/sidecar/dist/index.js
+  -- node /path/to/arma-mcp/sidecar/dist/index.js
 \end{commandblock}
 
 After starting Codex, inspect MCP servers with:
@@ -184,7 +184,7 @@ Expected result: \code{arma-mcp} is listed and its tools are available.
 For bridge-only development:
 
 \begin{commandblock}
-cd /home/mike/Documents/Programming/arma-mcp/sidecar
+cd /path/to/arma-mcp/sidecar
 ARMA_MCP_TOKEN=dev-token npm run dev:http
 \end{commandblock}
 
@@ -196,7 +196,7 @@ keeps MCP traffic on stdout while logs go to stderr.
 From the repository root:
 
 \begin{commandblock}
-cd /home/mike/Documents/Programming/arma-mcp
+cd /path/to/arma-mcp
 ./scripts/build-extension.sh
 \end{commandblock}
 
@@ -228,7 +228,7 @@ is not the first Proton client path.
 From the repository root:
 
 \begin{commandblock}
-cd /home/mike/Documents/Programming/arma-mcp
+cd /path/to/arma-mcp
 hemtt build
 \end{commandblock}
 
@@ -377,7 +377,7 @@ Environment variables \code{ARMA\_MCP\_HOST}, \code{ARMA\_MCP\_PORT}, and
 After local prerequisites are installed:
 
 \begin{commandblock}
-cd /home/mike/Documents/Programming/arma-mcp
+cd /path/to/arma-mcp
 ./scripts/validate.sh
 \end{commandblock}
 

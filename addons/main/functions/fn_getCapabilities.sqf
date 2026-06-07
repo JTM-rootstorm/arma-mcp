@@ -43,7 +43,8 @@ createHashMapFromArray [
         ["composition", true],
         ["catalogScan", true],
         ["catalogMeasurement", true],
-        ["screenshotCapture", false],
+        ["screenshotCapture", true],
+        ["cameraControl", true],
         ["rawSqf", false],
         ["historyGrouping", true]
     ]]

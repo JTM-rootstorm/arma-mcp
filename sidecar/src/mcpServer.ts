@@ -1,6 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { BridgeConfig } from "./httpBridge.js";
 import { DEFAULT_SCAN_TARGETS, ingestCatalogChunk, stableHash, type CatalogChunk } from "./catalog.js";
 import {
@@ -9,6 +11,7 @@ import {
   createVisualInspectionRun,
   ensureCatalogSchema,
   findCatalogByDimensions,
+  finishVisualInspectionRun,
   getCatalogSearchDiagnostics,
   getCatalogClass,
   getCatalogStatus,
@@ -26,6 +29,7 @@ import {
   openCatalogDb,
   repairStaleScan,
   searchCatalogClasses,
+  insertClassScreenshot,
   writeScanTargetProgress,
   writeClassMeasurement,
   writeScanManifest
@@ -59,6 +63,7 @@ import {
 import type { ArmaMcpState } from "./state.js";
 
 const emptyInputSchema = z.object({});
+const sidecarRepoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 type CatalogScanJob = {
   scanId: string;
   targets: string[];
@@ -125,9 +130,34 @@ const catalogMeasureMissingToolSchema = z.object({
 });
 const visualInspectClassToolSchema = z.object({
   className: z.string().trim().min(1).max(200),
-  angles: z.array(z.string().trim().min(1).max(40)).max(16).default(["front", "left", "right", "rear"]),
+  angles: z.array(z.string().trim().min(1).max(40)).max(16).default(["front", "left", "right", "back", "top", "iso"]),
   resolution: z.tuple([z.number().int().positive().max(7680), z.number().int().positive().max(4320)]).default([1280, 720]),
-  force: z.boolean().default(false)
+  force: z.boolean().default(false),
+  distance: z.number().positive().max(100).default(8),
+  height: z.number().min(-10).max(100).default(2.2),
+  fov: z.number().positive().max(2).default(0.7),
+  settleSeconds: z.number().nonnegative().max(5).default(0.25),
+  timeoutMs: z.number().int().positive().max(120_000).default(60_000)
+});
+const cameraPreviewSceneToolSchema = z.object({
+  className: z.string().trim().min(1).max(200),
+  positionATL: vector3Schema.default([0, 0, 0]),
+  dir: z.number().default(0),
+  angles: z.array(z.string().trim().min(1).max(40)).max(16).default(["iso"]),
+  distance: z.number().positive().max(100).default(8),
+  height: z.number().min(-10).max(100).default(2.2),
+  fov: z.number().positive().max(2).default(0.7),
+  settleSeconds: z.number().nonnegative().max(5).default(0.25),
+  timeoutMs: z.number().int().positive().max(120_000).default(60_000)
+});
+const cameraCaptureClassAnglesToolSchema = cameraPreviewSceneToolSchema.extend({
+  angles: z.array(z.string().trim().min(1).max(40)).min(1).max(16).default(["front", "left", "right", "back", "top", "iso"]),
+  runId: z.string().trim().min(1).max(160).optional()
+});
+const cameraCaptureCurrentViewToolSchema = z.object({
+  filename: z.string().trim().min(1).max(240).optional(),
+  runId: z.string().trim().min(1).max(160).optional(),
+  timeoutMs: z.number().int().positive().max(120_000).default(60_000)
 });
 const visualAddTagToolSchema = z.object({
   className: z.string().trim().min(1).max(200),
@@ -468,7 +498,7 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig)
   registerCatalogTools(server, state);
   registerCatalogMeasurementTools(server, state);
   registerEdenInspectionAliasTools(server, state);
-  registerVisualAndCameraTools(server);
+  registerVisualAndCameraTools(server, state);
   registerCompositionCatalogTools(server);
   registerActionTool(
     server,
@@ -1042,24 +1072,98 @@ function registerEdenInspectionAliasTools(server: McpServer, state: ArmaMcpState
   );
 }
 
-function registerVisualAndCameraTools(server: McpServer): void {
-  for (const toolName of [
+function registerVisualAndCameraTools(server: McpServer, state: ArmaMcpState): void {
+  server.registerTool(
     "arma.camera.createPreviewScene",
+    {
+      title: "Create Camera Preview Scene",
+      description: "Create a temporary local class preview scene in Eden and move the camera to the requested view.",
+      inputSchema: cameraPreviewSceneToolSchema.shape
+    },
+    async (input) => {
+      const parsed = cameraPreviewSceneToolSchema.parse(input);
+      const result = await dispatchCatalogAction(state, "camera.createPreviewScene", parsed, parsed.timeoutMs);
+      return jsonToolResult(result.result);
+    }
+  );
+
+  server.registerTool(
     "arma.camera.inspectClass",
+    {
+      title: "Inspect Class With Camera",
+      description: "Capture screenshot angles for a temporary local class preview scene.",
+      inputSchema: cameraCaptureClassAnglesToolSchema.shape
+    },
+    async (input) => {
+      const parsed = cameraCaptureClassAnglesToolSchema.parse(input);
+      return withCatalogDb(async (catalogDb) => {
+        const runId = createVisualInspectionRun(catalogDb, {
+          className: parsed.className,
+          status: "running",
+          angles: parsed.angles,
+          screenshotDir: screenshotCacheDir(parsed.className),
+          resolution: [0, 0]
+        });
+        const result = await captureClassAngles(state, parsed, runId);
+        const screenshots = storeCapturedScreenshots(catalogDb, parsed.className, runId, asRecord(result.result));
+        const failed = screenshots.filter((shot) => shot.captured === false);
+        finishVisualInspectionRun(catalogDb, runId, failed.length > 0 ? "partial" : "complete", failed.length > 0 ? "one_or_more_screenshots_failed" : null);
+        return jsonToolResult({ ...asRecord(result.result), inspectionRunId: runId, screenshots });
+      });
+    }
+  );
+
+  server.registerTool(
     "arma.camera.captureClassAngles",
+    {
+      title: "Capture Class Angles",
+      description: "Capture PNG screenshots for a temporary local class preview scene.",
+      inputSchema: cameraCaptureClassAnglesToolSchema.shape
+    },
+    async (input) => {
+      const parsed = cameraCaptureClassAnglesToolSchema.parse(input);
+      const result = await captureClassAngles(state, parsed);
+      const payload = asRecord(result.result);
+      const runId = String(payload.run_id ?? payload.runId ?? parsed.runId ?? `capture_${Date.now().toString(36)}`);
+      const screenshots = normalizeScreenshotArtifacts(parsed.className, undefined, asScreenshotRows(payload.screenshots), runId);
+      return jsonToolResult({ ...payload, screenshots });
+    }
+  );
+
+  server.registerTool(
     "arma.camera.captureCurrentView",
-    "arma.camera.destroyPreviewScene"
-  ]) {
-    server.registerTool(
-      toolName,
-      {
-        title: toolName,
-        description: "Camera preview interface placeholder; screenshot capture backend is not implemented yet.",
-        inputSchema: emptyInputSchema.shape
-      },
-      async () => jsonToolResult({ ok: false, error: { code: "screenshot_capture_not_implemented" } })
-    );
-  }
+    {
+      title: "Capture Current Camera View",
+      description: "Ask Arma to screenshot the current 3D scene and optionally mirror it into the local cache.",
+      inputSchema: cameraCaptureCurrentViewToolSchema.shape
+    },
+    async (input) => {
+      const parsed = cameraCaptureCurrentViewToolSchema.parse(input);
+      const runId = parsed.runId ?? `current_${Date.now().toString(36)}`;
+      const result = await dispatchCatalogAction(
+        state,
+        "camera.captureCurrentView",
+        { runId, filename: parsed.filename },
+        parsed.timeoutMs
+      );
+      const payload = asRecord(result.result);
+      const screenshots = normalizeScreenshotArtifacts("current-view", undefined, asScreenshotRows(payload.screenshots), runId);
+      return jsonToolResult({ ...payload, screenshots });
+    }
+  );
+
+  server.registerTool(
+    "arma.camera.destroyPreviewScene",
+    {
+      title: "Destroy Camera Preview Scene",
+      description: "Terminate the preview camera and delete temporary local preview objects.",
+      inputSchema: emptyInputSchema.shape
+    },
+    async () => {
+      const result = await dispatchCatalogAction(state, "camera.destroyPreviewScene", {}, 30_000);
+      return jsonToolResult(result.result);
+    }
+  );
 
   server.registerTool(
     "arma.visual.inspectClass",
@@ -1078,21 +1182,26 @@ function registerVisualAndCameraTools(server: McpServer): void {
         if (!parsed.force && !isSafeToMeasure(catalogClass)) {
           throw new Error(`Class ${parsed.className} is not safe for visual inspection without force=true`);
         }
-        const screenshotDir = `.mcp-cache/arma/screenshots/${safePathSegment(parsed.className)}`;
+        const screenshotDir = screenshotCacheDir(parsed.className);
         mkdirSync(screenshotDir, { recursive: true });
         const runId = createVisualInspectionRun(catalogDb, {
           className: parsed.className,
-          status: "failed",
-          error: "screenshot_capture_not_implemented",
+          status: "running",
           angles: parsed.angles,
           screenshotDir,
           resolution: parsed.resolution
         });
-        return jsonToolResult({
-          ok: false,
-          inspectionRunId: runId,
-          screenshotDir,
-          error: { code: "screenshot_capture_not_implemented" }
+        return captureClassAngles(state, { ...parsed, runId: String(runId) }, runId).then((result) => {
+          const screenshots = storeCapturedScreenshots(catalogDb, parsed.className, runId, asRecord(result.result));
+          const failed = screenshots.filter((shot) => shot.captured === false);
+          finishVisualInspectionRun(catalogDb, runId, failed.length > 0 ? "partial" : "complete", failed.length > 0 ? "one_or_more_screenshots_failed" : null);
+          return jsonToolResult({
+            ...asRecord(result.result),
+            ok: failed.length === 0,
+            inspectionRunId: runId,
+            screenshotDir,
+            screenshots
+          });
         });
       });
     }
@@ -1262,6 +1371,120 @@ function registerCompositionCatalogTools(server: McpServer): void {
     },
     async (input) => jsonToolResult({ instructions: exportEdenInstructions(compositionExportToolSchema.parse(input).plan) })
   );
+}
+
+async function captureClassAngles(
+  state: ArmaMcpState,
+  parsed: z.infer<typeof cameraCaptureClassAnglesToolSchema> | (z.infer<typeof visualInspectClassToolSchema> & { runId?: string }),
+  inspectionRunId?: number
+) {
+  const runId = parsed.runId ?? String(inspectionRunId ?? `capture_${Date.now().toString(36)}`);
+  return dispatchCatalogAction(
+    state,
+    "camera.captureClassAngles",
+    {
+      className: parsed.className,
+      runId,
+      angles: parsed.angles,
+      positionATL: "positionATL" in parsed ? parsed.positionATL : [0, 0, 0],
+      dir: "dir" in parsed ? parsed.dir : 0,
+      distance: parsed.distance,
+      height: parsed.height,
+      fov: parsed.fov,
+      settleSeconds: parsed.settleSeconds
+    },
+    parsed.timeoutMs
+  );
+}
+
+function storeCapturedScreenshots(
+  catalogDb: ReturnType<typeof openCatalogDb>,
+  className: string,
+  inspectionRunId: number,
+  payload: Record<string, unknown>
+): Array<Record<string, unknown>> {
+  const runId = String(payload.run_id ?? payload.runId ?? inspectionRunId);
+  const screenshots = normalizeScreenshotArtifacts(className, inspectionRunId, asScreenshotRows(payload.screenshots), runId);
+  for (const screenshot of screenshots) {
+    if (screenshot.captured === false) {
+      continue;
+    }
+    insertClassScreenshot(catalogDb, {
+      className,
+      inspectionRunId,
+      angle: String(screenshot.angle ?? "unknown"),
+      filePath: String(screenshot.local_file_path ?? screenshot.profile_relative_path ?? screenshot.filename ?? ""),
+      cameraPosition: Array.isArray(screenshot.camera_position) ? screenshot.camera_position : [],
+      cameraTarget: Array.isArray(screenshot.camera_target) ? screenshot.camera_target : []
+    });
+  }
+  return screenshots;
+}
+
+function normalizeScreenshotArtifacts(
+  className: string,
+  inspectionRunId: number | undefined,
+  screenshots: Array<Record<string, unknown>>,
+  runId: string
+): Array<Record<string, unknown>> {
+  const targetDir = screenshotCacheDir(className);
+  mkdirSync(targetDir, { recursive: true });
+  return screenshots.map((screenshot) => {
+    const profileRelativePath = String(screenshot.profile_relative_path ?? screenshot.filename ?? "");
+    const angle = safePathSegment(String(screenshot.angle ?? "current"));
+    const targetPath = resolve(targetDir, `${safePathSegment(runId)}_${angle}.png`);
+    const copy = mirrorProfileScreenshot(profileRelativePath, targetPath);
+    return {
+      ...screenshot,
+      inspectionRunId: inspectionRunId ?? null,
+      profile_relative_path: profileRelativePath,
+      local_file_path: copy.copied ? targetPath : null,
+      expected_local_file_path: targetPath,
+      copied_to_cache: copy.copied,
+      copy_warning: copy.warning
+    };
+  });
+}
+
+function asScreenshotRows(input: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(input) ? input.map(asRecord) : [];
+}
+
+function screenshotCacheDir(className: string): string {
+  return resolve(process.env.ARMA_MCP_SCREENSHOT_CACHE_DIR ?? resolve(sidecarRepoRoot, ".mcp-cache/arma/screenshots"), safePathSegment(className));
+}
+
+function mirrorProfileScreenshot(profileRelativePath: string, targetPath: string): { copied: boolean; warning?: string } {
+  if (!profileRelativePath) {
+    return { copied: false, warning: "missing_profile_relative_path" };
+  }
+  const sourceRoot = process.env.ARMA_MCP_SCREENSHOT_SOURCE_DIR;
+  if (!sourceRoot) {
+    return { copied: false, warning: "set_ARMA_MCP_SCREENSHOT_SOURCE_DIR_to_profile_Screenshots_to_copy_pngs" };
+  }
+  const normalizedRelative = profileRelativePath.replace(/\\/g, "/").replace(/^\/+/, "");
+  const sourcePath = resolve(sourceRoot, normalizedRelative);
+  const resolvedRoot = resolve(sourceRoot);
+  if (!sourcePath.startsWith(resolvedRoot)) {
+    return { copied: false, warning: "profile_relative_path_escaped_source_root" };
+  }
+  if (!waitForFile(sourcePath, 3_000)) {
+    return { copied: false, warning: `source_png_not_found:${sourcePath}` };
+  }
+  mkdirSync(dirname(targetPath), { recursive: true });
+  copyFileSync(sourcePath, targetPath);
+  return { copied: true };
+}
+
+function waitForFile(path: string, timeoutMs: number): boolean {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    if (existsSync(path)) {
+      return true;
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+  }
+  return false;
 }
 
 async function startCatalogScanTool(

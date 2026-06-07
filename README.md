@@ -51,7 +51,7 @@ npm run build
 Example Codex CLI registration:
 
 ```bash
-codex mcp add arma-mcp --env ARMA_MCP_TOKEN=replace-with-local-dev-token -- node /home/mike/Documents/Programming/arma-mcp/sidecar/dist/index.js
+codex mcp add arma-mcp --env ARMA_MCP_TOKEN=replace-with-local-dev-token -- node /path/to/arma-mcp/sidecar/dist/index.js
 ```
 
 See [docs/CODEX_MCP_CONFIG.md](docs/CODEX_MCP_CONFIG.md).
@@ -59,7 +59,7 @@ See [docs/CODEX_MCP_CONFIG.md](docs/CODEX_MCP_CONFIG.md).
 ## Eden Test
 
 1. Set `ARMA_MCP_TOKEN` in the sidecar environment and put the same token in the local mod's `ArmaMCP.ini`.
-2. Start the sidecar through Codex MCP or `node sidecar/dist/index.js`.
+2. Start the sidecar directly with `node sidecar/dist/index.js`, or register/start it through Codex MCP only for sessions that need live Eden tools.
 3. Build/load the addon with HEMTT.
 4. Open Eden and select an object.
 5. Use the MCP tools to request/read a snapshot, generate a checkpoint plan, set `dryRun=false`, queue it, then inspect bridge events.

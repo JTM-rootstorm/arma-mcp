@@ -135,39 +135,19 @@ switch (_action) do {
         _result = [_params] call AMCP_fnc_measureClass;
     };
     case "camera.createPreviewScene": {
-        _ok = false;
-        _error = createHashMapFromArray [
-            ["code", "screenshot_capture_not_implemented"],
-            ["message", "Camera preview and screenshot capture are not implemented in this addon build."]
-        ];
+        _result = ["createPreviewScene", _params] call AMCP_fnc_cameraControl;
     };
     case "camera.inspectClass": {
-        _ok = false;
-        _error = createHashMapFromArray [
-            ["code", "screenshot_capture_not_implemented"],
-            ["message", "Camera preview and screenshot capture are not implemented in this addon build."]
-        ];
+        _result = ["inspectClass", _params] call AMCP_fnc_cameraControl;
     };
     case "camera.captureClassAngles": {
-        _ok = false;
-        _error = createHashMapFromArray [
-            ["code", "screenshot_capture_not_implemented"],
-            ["message", "Camera preview and screenshot capture are not implemented in this addon build."]
-        ];
+        _result = ["captureClassAngles", _params] call AMCP_fnc_cameraControl;
     };
     case "camera.captureCurrentView": {
-        _ok = false;
-        _error = createHashMapFromArray [
-            ["code", "screenshot_capture_not_implemented"],
-            ["message", "Camera preview and screenshot capture are not implemented in this addon build."]
-        ];
+        _result = ["captureCurrentView", _params] call AMCP_fnc_cameraControl;
     };
     case "camera.destroyPreviewScene": {
-        _ok = false;
-        _error = createHashMapFromArray [
-            ["code", "screenshot_capture_not_implemented"],
-            ["message", "Camera preview and screenshot capture are not implemented in this addon build."]
-        ];
+        _result = ["destroyPreviewScene", _params] call AMCP_fnc_cameraControl;
     };
     case "eden.create_entity": {
         _result = [_params] call AMCP_fnc_createEntity;

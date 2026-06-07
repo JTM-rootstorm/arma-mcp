@@ -22,6 +22,7 @@ class CfgFunctions {
             class buildEntitySnapshot {};
             class buildObjectSnapshot {};
             class callBridge {};
+            class cameraControl {};
             class applyComposition {};
             class captureComposition {};
             class captureSelection {};

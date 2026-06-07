@@ -14,6 +14,7 @@ import {
   getLatestScanManifest,
   getScanProgress,
   initializeScanTargets,
+  insertClassScreenshot,
   listCatalogCategories,
   listCatalogFactions,
   listClassesMissingMeasurements,
@@ -140,6 +141,14 @@ describe("catalog database", () => {
         sizeOf: 4
       });
       addCatalogVisualTag(catalog, { className: "Land_Republic_Terminal_F", tag: "console", confidence: 0.8 });
+      const screenshotId = insertClassScreenshot(catalog, {
+        className: "Land_Republic_Terminal_F",
+        angle: "front",
+        filePath: ".mcp-cache/arma/screenshots/Land_Republic_Terminal_F/front.png",
+        cameraPosition: [0, -8, 2],
+        cameraTarget: [0, 0, 1]
+      });
+      expect(screenshotId).toBeGreaterThanOrEqual(0);
       expect(searchCatalogClasses(catalog, { visualTags: ["console"] })[0]).toMatchObject({
         class_name: "Land_Republic_Terminal_F",
         visual_tags: ["console"]
