@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DIRECT_BRIDGE_ACTION_NAMES } from "./actionManifest.js";
 
 export const schemaVersion = 1 as const;
 
@@ -50,58 +51,7 @@ export const entitySnapshotSchema = z
   })
   .passthrough();
 
-export const actionNameSchema = z.enum([
-  "bridge.ping",
-  "bridge.get_capabilities",
-  "eden.get_status",
-  "eden.get_selection",
-  "eden.list_entities",
-  "eden.find_entities",
-  "eden.get_entity_snapshot",
-  "eden.get_entities",
-  "eden.get_entity_attributes",
-  "eden.create_entity",
-  "eden.set_entity_transform",
-  "eden.set_entity_attributes",
-  "eden.append_init",
-  "eden.delete_entities",
-  "eden.set_selection",
-  "eden.clear_selection",
-  "eden.focus_entities",
-  "eden.batch",
-  "eden.validate_plan",
-  "eden.capture_composition",
-  "eden.apply_composition",
-  "eden.get_connections",
-  "eden.get_synced",
-  "eden.sync_entities",
-  "eden.unsync_entities",
-  "eden.list_layers",
-  "eden.create_layer",
-  "eden.assign_layer",
-  "eden.remove_from_layer",
-  "eden.set_layer_attributes",
-  "eden.delete_layer",
-  "terrain.sample_area",
-  "terrain.find_flat_area",
-  "terrain.find_nearest_roads",
-  "spatial.check_collision",
-  "spatial.score_placement",
-  "spatial.line_of_sight",
-  "spatial.find_cover_positions",
-  "spatial.find_lz_candidates",
-  "assets.search_classes",
-  "assets.get_class",
-  "catalog.scanStart",
-  "catalog.scanChunk",
-  "catalog.scanFinish",
-  "catalog.measureClass",
-  "camera.createPreviewScene",
-  "camera.inspectClass",
-  "camera.captureClassAngles",
-  "camera.captureCurrentView",
-  "camera.destroyPreviewScene"
-]);
+export const actionNameSchema = z.enum(DIRECT_BRIDGE_ACTION_NAMES);
 
 export const actionPacketSchema = z
   .object({

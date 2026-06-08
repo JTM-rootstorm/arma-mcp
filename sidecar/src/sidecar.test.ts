@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { generateCheckpointPlan } from "./checkpointPlanner.js";
+import { DIRECT_ACTION_MANIFEST, PUBLIC_DIRECT_MCP_TOOLS } from "./actionManifest.js";
 import { ingestCatalogChunk, normalizeCatalogRecord } from "./catalog.js";
 import {
   closeCatalogDb,
@@ -940,11 +941,19 @@ describe("managed MCP discovery fallback", () => {
 describe("synthetic Eden action inventory", () => {
   const sqf = (relativePath: string) => readFileSync(join(repoRoot, relativePath), "utf8");
 
+  it("keeps the direct action manifest as the protocol source of truth", () => {
+    const manifestActions = DIRECT_ACTION_MANIFEST.map((entry) => entry.action);
+
+    expect(actionNameSchema.options).toEqual(manifestActions);
+    expect(new Set(manifestActions).size).toBe(manifestActions.length);
+    expect(DIRECT_ACTION_MANIFEST.every((entry) => entry.mode && entry.docsCategory)).toBe(true);
+  });
+
   it("keeps direct protocol actions advertised and dispatched by the addon", () => {
     const capabilities = sqf("addons/main/functions/fn_getCapabilities.sqf");
     const dispatcher = sqf("addons/main/functions/fn_dispatchAction.sqf");
 
-    const protocolActions = actionNameSchema.options;
+    const protocolActions = DIRECT_ACTION_MANIFEST.filter((entry) => entry.sqfRequired).map((entry) => entry.action);
     const missing = protocolActions
       .filter((action) => !capabilities.includes(`"${action}"`) || !dispatcher.includes(`case "${action}"`))
       .map((action) => ({
@@ -952,6 +961,94 @@ describe("synthetic Eden action inventory", () => {
         capability: capabilities.includes(`"${action}"`),
         dispatcher: dispatcher.includes(`case "${action}"`)
       }));
+
+    expect(missing).toEqual([]);
+  });
+
+  it("keeps manifest public MCP tools registered and documented", () => {
+    const mcpServer = sqf("sidecar/src/mcpServer.ts");
+    const toolReference = sqf("docs/TOOL_REFERENCE.md");
+    const missing = PUBLIC_DIRECT_MCP_TOOLS.filter(
+      (toolName) => !mcpServer.includes(`"${toolName}"`) || !toolReference.includes(`\`${toolName}\``)
+    ).map((toolName) => ({
+      toolName,
+      registered: mcpServer.includes(`"${toolName}"`),
+      documented: toolReference.includes(`\`${toolName}\``)
+    }));
+
+    expect(missing).toEqual([]);
+  });
+
+  it("keeps fallback-routed direct tools represented in the manifest", () => {
+    const manifestTools = new Set<string>(PUBLIC_DIRECT_MCP_TOOLS);
+    const directFallbackTools = MCP_DISCOVERY_FALLBACK_TOOL_NAMES.filter((toolName) =>
+      toolName.match(/^arma\.(bridge|eden|terrain|spatial|assets|camera)\./)
+    );
+    const missing = directFallbackTools.filter(
+      (toolName) =>
+        !manifestTools.has(toolName) &&
+        ![
+          "arma.eden.create_logic",
+          "arma.eden.create_marker",
+          "arma.eden.create_module",
+          "arma.eden.create_object",
+          "arma.eden.create_trigger",
+          "arma.eden.delete_marker",
+          "arma.eden.exportSelection",
+          "arma.eden.generate_aa_site",
+          "arma.eden.generate_cover_line",
+          "arma.eden.generate_lz",
+          "arma.eden.generate_prop_wall",
+          "arma.eden.generate_road_checkpoint",
+          "arma.eden.generate_small_outpost",
+          "arma.eden.getObject",
+          "arma.eden.getSynced",
+          "arma.eden.listPlaced",
+          "arma.eden.read_module_args",
+          "arma.eden.set_marker_alpha",
+          "arma.eden.set_marker_color",
+          "arma.eden.set_marker_shape",
+          "arma.eden.set_marker_size",
+          "arma.eden.set_marker_text",
+          "arma.eden.set_marker_type",
+          "arma.eden.set_module_args",
+          "arma.eden.set_trigger_activation",
+          "arma.eden.set_trigger_area",
+          "arma.eden.set_trigger_repeatable",
+          "arma.eden.set_trigger_statements",
+          "arma.eden.sync_module",
+          "arma.eden.inspectClass",
+          "arma.eden.planComposition",
+          "arma.bridge.diagnostics",
+          "arma.visual.addTag",
+          "arma.visual.findByVisualTags",
+          "arma.visual.getScreenshots",
+          "arma.visual.inspectClass"
+        ].includes(toolName)
+    );
+
+    expect(missing).toEqual([]);
+  });
+
+  it("keeps excluded action policy documented outside local planning files", () => {
+    const exclusions = sqf("EXCLUDED_ACTIONS.md");
+
+    for (const excludedName of ["arma.raw.eval_sqf", "arma.server.remoteExec", "0.0.0.0", "unauthenticated bridge"]) {
+      expect(exclusions).toContain(excludedName);
+    }
+  });
+
+  it("keeps manifest batch operation metadata aligned with synthetic batch registries", () => {
+    const validator = sqf("addons/main/functions/fn_validateBatch.sqf");
+    const executor = sqf("addons/main/functions/fn_applyBatch.sqf");
+    const missing = DIRECT_ACTION_MANIFEST.flatMap((entry) => {
+      if (!entry.batchOp) {
+        return [];
+      }
+      return validator.includes(`"${entry.batchOp}"`) && executor.includes(`"${entry.batchOp}"`)
+        ? []
+        : [{ action: entry.action, batchOp: entry.batchOp }];
+    });
 
     expect(missing).toEqual([]);
   });

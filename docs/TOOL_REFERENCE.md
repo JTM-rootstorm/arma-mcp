@@ -2,6 +2,8 @@
 
 ArmaMCP exposes typed MCP tools. Write tools default to reviewable dry-runs where mutation is possible, and destructive operations require explicit confirmation.
 
+The direct bridge action manifest lives in `sidecar/src/actionManifest.ts`. Deliberately omitted unsafe surfaces are tracked in `EXCLUDED_ACTIONS.md`.
+
 ## Bridge
 
 - `arma.ping`
