@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { compositionPlanSchema, editorSnapshotSchema } from "./schema.js";
 import type { ArmaMcpState, QueuedActionInput } from "./state.js";
 import type { Logger } from "./log.js";
+import { createRuntimeInfo, withRuntimeBridgeUrl, type SidecarRuntimeInfo } from "./runtime.js";
 
 export type BridgeConfig = {
   host: string;
@@ -15,8 +16,35 @@ export type StartedBridge = {
   server: Server;
   config: BridgeConfig;
   url: string;
+  runtime: SidecarRuntimeInfo;
+  diagnostics(): BridgeRuntimeDiagnostics;
   close(): Promise<void>;
 };
+
+export type BridgeRuntimeDiagnostics = {
+  process: SidecarRuntimeInfo;
+  bridge: {
+    lastCommandPollAt: string | null;
+    lastSnapshotAt: string | null;
+    lastResultAt: string | null;
+    lastEventAt: string | null;
+    totalCommandPolls: number;
+    totalSnapshots: number;
+    totalResults: number;
+    totalEvents: number;
+    recentErrors: BridgeRuntimeError[];
+  };
+};
+
+export type BridgeRuntimeError = {
+  at: string;
+  method: string;
+  path: string;
+  statusCode?: number;
+  error: string;
+};
+
+type MutableBridgeRuntimeStats = BridgeRuntimeDiagnostics["bridge"];
 
 export function resolveBridgeConfig(env = process.env): BridgeConfig {
   const generatedToken = !env.ARMA_MCP_TOKEN;
@@ -42,11 +70,32 @@ export function isRecoverableListenError(error: unknown): boolean {
 export async function startHttpBridge(
   state: ArmaMcpState,
   logger: Logger,
-  config = resolveBridgeConfig()
+  config = resolveBridgeConfig(),
+  runtimeInfo?: SidecarRuntimeInfo
 ): Promise<StartedBridge> {
+  const stats: MutableBridgeRuntimeStats = {
+    lastCommandPollAt: null,
+    lastSnapshotAt: null,
+    lastResultAt: null,
+    lastEventAt: null,
+    totalCommandPolls: 0,
+    totalSnapshots: 0,
+    totalResults: 0,
+    totalEvents: 0,
+    recentErrors: []
+  };
+  let runtime = runtimeInfo ?? createRuntimeInfo({
+    mode: "stdio",
+    host: config.host,
+    port: config.port,
+    ownsHttpListener: true,
+    skipHttpListen: false
+  });
+
   const server = createServer((request, response) => {
-    handleRequest(request, response, state, config).catch((error: unknown) => {
+    handleRequest(request, response, state, config, () => diagnostics(), stats).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
+      rememberRuntimeError(stats, request, 500, message);
       logger.error("http request failed", { error: message });
       sendJson(response, 500, { error: "internal_error", message });
     });
@@ -63,15 +112,36 @@ export async function startHttpBridge(
   const address = server.address();
   const actualPort = typeof address === "object" && address ? address.port : config.port;
   const actualConfig = { ...config, port: actualPort };
+  runtime = withRuntimeBridgeUrl(runtime, actualConfig.host, actualConfig.port);
   if (actualConfig.generatedToken) {
     logger.warn("ARMA_MCP_TOKEN missing; generated in-memory dev token", { token: actualConfig.token });
   }
-  logger.info("HTTP bridge listening", { host: actualConfig.host, port: actualConfig.port });
+  logger.info("HTTP bridge listening", {
+    host: actualConfig.host,
+    port: actualConfig.port,
+    mode: runtime.mode,
+    pid: runtime.pid,
+    startedAt: runtime.startedAt,
+    ownsHttpListener: runtime.ownsHttpListener,
+    httpBridgeUrl: runtime.httpBridgeUrl
+  });
+
+  function diagnostics(): BridgeRuntimeDiagnostics {
+    return {
+      process: runtime,
+      bridge: {
+        ...stats,
+        recentErrors: [...stats.recentErrors]
+      }
+    };
+  }
 
   return {
     server,
     config: actualConfig,
     url: `http://${actualConfig.host}:${actualConfig.port}`,
+    runtime,
+    diagnostics,
     close: () =>
       new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
@@ -83,7 +153,9 @@ async function handleRequest(
   request: IncomingMessage,
   response: ServerResponse,
   state: ArmaMcpState,
-  config: BridgeConfig
+  config: BridgeConfig,
+  diagnostics: () => BridgeRuntimeDiagnostics,
+  stats: MutableBridgeRuntimeStats
 ): Promise<void> {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? `${config.host}:${config.port}`}`);
 
@@ -93,12 +165,13 @@ async function handleRequest(
   }
 
   if (!isAuthorized(request, config.token)) {
+    rememberRuntimeError(stats, request, 401, "unauthorized");
     sendJson(response, 401, { error: "unauthorized" });
     return;
   }
 
   if (url.pathname.startsWith("/mcp/")) {
-    await handleMcpControlRequest(request, response, url, state);
+    await handleMcpControlRequest(request, response, url, state, diagnostics);
     return;
   }
 
@@ -106,11 +179,15 @@ async function handleRequest(
     const body = await readJson(request);
     const snapshot = editorSnapshotSchema.parse(body);
     const stored = state.storeSnapshot(snapshot);
+    stats.totalSnapshots += 1;
+    stats.lastSnapshotAt = new Date().toISOString();
     sendJson(response, 200, { ok: true, snapshotId: stored.id });
     return;
   }
 
   if (request.method === "GET" && url.pathname === "/bridge/commands") {
+    stats.totalCommandPolls += 1;
+    stats.lastCommandPollAt = new Date().toISOString();
     sendJson(response, 200, { ok: true, commands: state.drainCommands() });
     return;
   }
@@ -118,6 +195,8 @@ async function handleRequest(
   if (request.method === "POST" && url.pathname === "/bridge/result") {
     const body = await readJson(request);
     const result = state.completeActionResult(body);
+    stats.totalResults += 1;
+    stats.lastResultAt = new Date().toISOString();
     sendJson(response, 200, { ok: true, resultId: result.id });
     return;
   }
@@ -129,6 +208,8 @@ async function handleRequest(
       typeof body.message === "string" ? body.message : "Eden posted an event",
       body
     );
+    stats.totalEvents += 1;
+    stats.lastEventAt = new Date().toISOString();
     sendJson(response, 200, { ok: true, eventId: event.id });
     return;
   }
@@ -140,18 +221,23 @@ async function handleMcpControlRequest(
   request: IncomingMessage,
   response: ServerResponse,
   url: URL,
-  state: ArmaMcpState
+  state: ArmaMcpState,
+  diagnostics: () => BridgeRuntimeDiagnostics
 ): Promise<void> {
   if (request.method === "GET" && url.pathname === "/mcp/status") {
     const lastSeenAt = await state.getLastEdenSeenAt();
+    const runtimeDiagnostics = diagnostics();
+    const bridgeLastSeenAt = latestIso(lastSeenAt, runtimeDiagnostics.bridge.lastCommandPollAt);
     sendJson(response, 200, {
       ok: true,
-      armaConnected: lastSeenAt !== null,
-      edenAvailable: lastSeenAt !== null,
+      armaConnected: bridgeLastSeenAt !== null,
+      edenAvailable: bridgeLastSeenAt !== null,
       pendingActions: await state.pendingCommandCount(),
       pendingResults: await state.pendingActionCount(),
-      lastSeenAt,
-      lastSnapshotAt: (await state.getLastSnapshot())?.createdAt ?? null
+      lastSeenAt: bridgeLastSeenAt,
+      lastSnapshotAt: (await state.getLastSnapshot())?.createdAt ?? null,
+      lastSnapshotUploadAt: runtimeDiagnostics.bridge.lastSnapshotAt,
+      diagnostics: runtimeDiagnostics
     });
     return;
   }
@@ -229,6 +315,26 @@ function sendJson(response: ServerResponse, statusCode: number, body: unknown): 
     "content-length": Buffer.byteLength(payload).toString()
   });
   response.end(payload);
+}
+
+function rememberRuntimeError(
+  stats: MutableBridgeRuntimeStats,
+  request: IncomingMessage,
+  statusCode: number | undefined,
+  error: string
+): void {
+  stats.recentErrors.unshift({
+    at: new Date().toISOString(),
+    method: request.method ?? "UNKNOWN",
+    path: request.url ?? "/",
+    statusCode,
+    error
+  });
+  stats.recentErrors.splice(20);
+}
+
+function latestIso(...values: Array<string | null | undefined>): string | null {
+  return values.filter((value): value is string => typeof value === "string").sort().at(-1) ?? null;
 }
 
 function truthyEnv(value: string | undefined): boolean {

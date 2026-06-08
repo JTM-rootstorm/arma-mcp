@@ -66,3 +66,24 @@ For local development of the stdio reuse path:
 cd /path/to/arma-mcp/sidecar
 ARMA_MCP_TOKEN=dev-token npm run dev:stdio-existing
 ```
+
+## Safe Restart Workflow
+
+Codex normally starts the MCP stdio process from `sidecar/dist/index.js`. If
+Arma is polling a separately started HTTP bridge, keep Codex configured with
+`ARMA_MCP_SKIP_HTTP_LISTEN=1` and restart only the HTTP-only bridge:
+
+```bash
+cd /path/to/arma-mcp/sidecar
+ARMA_MCP_TOKEN=dev-token npm run dev:http
+```
+
+Avoid killing generic `dist/index.js` processes unless you intentionally want
+the Codex MCP host to reconnect the stdio server. A healthy stdio reuse process
+will report `mode: "stdio-existing-bridge"` and `ownsHttpListener: false` from
+`arma.ping`, `arma.bridge.get_status`, or `arma.bridge.diagnostics`.
+
+If Eden stops polling after a bridge restart, restart or reload Arma Eden after
+the HTTP bridge is already listening. The direct HTTP bridge remains a useful
+diagnostic fallback while the managed Codex MCP host is stale, but keep bearer
+tokens local and out of committed files.

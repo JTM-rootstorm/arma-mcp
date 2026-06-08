@@ -23,6 +23,7 @@ type RemoteStatus = {
   pendingResults: number;
   lastSeenAt: string | null;
   lastSnapshotAt: string | null;
+  diagnostics?: unknown;
 };
 
 export function createRemoteBridgeState(config: BridgeConfig): ArmaMcpState {
@@ -149,6 +150,10 @@ export function createRemoteBridgeState(config: BridgeConfig): ArmaMcpState {
         `/mcp/events?limit=${encodeURIComponent(String(limit))}`
       );
       return body.events;
+    },
+
+    async getBridgeDiagnostics() {
+      return (await getStatus()).diagnostics ?? null;
     }
   };
 }

@@ -82,6 +82,7 @@ export interface ArmaMcpState {
   getLastSnapshot(): EditorSnapshot | null | Promise<EditorSnapshot | null>;
   getLastEdenSeenAt(): string | null | Promise<string | null>;
   recentEvents(limit?: number): Array<BridgeEvent | BridgeResult | AuditEvent> | Promise<Array<BridgeEvent | BridgeResult | AuditEvent>>;
+  getBridgeDiagnostics?(): unknown | Promise<unknown>;
 }
 
 export function createId(prefix: string): string {

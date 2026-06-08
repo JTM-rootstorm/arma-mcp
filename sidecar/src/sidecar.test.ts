@@ -560,6 +560,48 @@ describe("HTTP bridge auth", () => {
     expect(body.commands).toHaveLength(1);
   });
 
+  it("reports bridge runtime diagnostics and poll counters", async () => {
+    const state = createState();
+    const bridge = await startHttpBridge(state, logger, {
+      host: "127.0.0.1",
+      port: 0,
+      token: "test-token",
+      generatedToken: false
+    });
+    bridges.push(bridge);
+
+    await fetch(`${bridge.url}/bridge/commands`, {
+      headers: { authorization: "Bearer nope" }
+    });
+    await fetch(`${bridge.url}/bridge/commands`, {
+      headers: { authorization: "Bearer test-token" }
+    });
+
+    const response = await fetch(`${bridge.url}/mcp/status`, {
+      headers: { authorization: "Bearer test-token" }
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      armaConnected: boolean;
+      lastSeenAt: string | null;
+      diagnostics: {
+        process: { pid: number; mode: string; ownsHttpListener: boolean; httpBridgeUrl: string };
+        bridge: { totalCommandPolls: number; lastCommandPollAt: string | null; recentErrors: Array<{ statusCode: number }> };
+      };
+    };
+    expect(body.armaConnected).toBe(true);
+    expect(body.lastSeenAt).toBeTypeOf("string");
+    expect(body.diagnostics.process).toMatchObject({
+      pid: process.pid,
+      mode: "stdio",
+      ownsHttpListener: true,
+      httpBridgeUrl: bridge.url
+    });
+    expect(body.diagnostics.bridge.totalCommandPolls).toBe(1);
+    expect(body.diagnostics.bridge.lastCommandPollAt).toBeTypeOf("string");
+    expect(body.diagnostics.bridge.recentErrors[0]).toMatchObject({ statusCode: 401 });
+  });
+
   it("stores posted snapshots", async () => {
     const state = createState();
     const bridge = await startHttpBridge(state, logger, {

@@ -60,6 +60,7 @@ import {
   queueApplyPlanInputSchema,
   requestSnapshotInputSchema
 } from "./schema.js";
+import type { SidecarRuntimeInfo } from "./runtime.js";
 import type { ArmaMcpState } from "./state.js";
 
 const emptyInputSchema = z.object({});
@@ -380,11 +381,20 @@ const applyCompositionToolSchema = writeBaseSchema.extend({
   layer: z.string().max(160).optional()
 });
 
-export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig): McpServer {
+export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig, runtimeInfo?: SidecarRuntimeInfo): McpServer {
   const server = new McpServer({
     name: "arma-mcp",
     version: "0.1.0"
   });
+  const runtime: SidecarRuntimeInfo = runtimeInfo ?? {
+    mode: "stdio",
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    ownsHttpListener: true,
+    skipHttpListen: false,
+    httpBridgeUrl: `http://${bridgeConfig.host}:${bridgeConfig.port}`,
+    nodeVersion: process.version
+  };
 
   server.registerTool(
     "arma.ping",
@@ -398,6 +408,7 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig)
         ok: true,
         server: "arma-mcp",
         version: "0.1.0",
+        runtime,
         httpBridge: { host: bridgeConfig.host, port: bridgeConfig.port }
       })
   );
@@ -420,6 +431,7 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig)
           pendingActions: null,
           pendingResults: null,
           lastSeenAt: null,
+          runtime,
           httpBridge: { host: bridgeConfig.host, port: bridgeConfig.port },
           error: status.error
         });
@@ -432,7 +444,36 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig)
         pendingActions: status.pendingCommandCount,
         pendingResults: status.pendingActionCount,
         lastSeenAt: status.lastSeenAt,
+        lastSnapshotAt: status.lastSnapshotAt,
+        runtime,
+        diagnostics: status.diagnostics ?? null,
         httpBridge: { host: bridgeConfig.host, port: bridgeConfig.port }
+      });
+    }
+  );
+
+  server.registerTool(
+    "arma.bridge.diagnostics",
+    {
+      title: "Bridge Diagnostics",
+      description: "Report MCP stdio process identity, HTTP bridge reachability, and recent bridge activity.",
+      inputSchema: emptyInputSchema.shape
+    },
+    async () => {
+      const status = await readBridgeStatus(state);
+      return jsonToolResult({
+        sidecarConnected: true,
+        runtime,
+        httpBridge: { host: bridgeConfig.host, port: bridgeConfig.port, url: runtime.httpBridgeUrl },
+        bridgeReachable: status.ok,
+        armaConnected: status.ok ? status.lastSeenAt !== null : false,
+        edenAvailable: status.ok ? status.lastSeenAt !== null : false,
+        lastSeenAt: status.ok ? status.lastSeenAt : null,
+        lastSnapshotAt: status.ok ? status.lastSnapshotAt : null,
+        pendingActions: status.ok ? status.pendingCommandCount : null,
+        pendingResults: status.ok ? status.pendingActionCount : null,
+        diagnostics: status.ok ? status.diagnostics ?? null : null,
+        error: status.ok ? null : status.error
       });
     }
   );
@@ -633,6 +674,7 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig)
         return jsonToolResult({
           sidecar: "ok",
           httpBridge: { host: bridgeConfig.host, port: bridgeConfig.port },
+          runtime,
           bridgeReachable: false,
           eden: {
             connected: false,
@@ -646,6 +688,7 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig)
       return jsonToolResult({
         sidecar: "ok",
         httpBridge: { host: bridgeConfig.host, port: bridgeConfig.port },
+        runtime,
         bridgeReachable: true,
         eden: {
           connected: status.lastSeenAt !== null,
@@ -1999,6 +2042,7 @@ async function readBridgeStatus(state: ArmaMcpState): Promise<
       lastSnapshotAt: string | null;
       pendingCommandCount: number;
       pendingActionCount: number;
+      diagnostics: unknown;
     }
   | { ok: false; error: string }
 > {
@@ -2010,7 +2054,8 @@ async function readBridgeStatus(state: ArmaMcpState): Promise<
       lastSeenAt,
       lastSnapshotAt: lastSnapshot?.createdAt ?? null,
       pendingCommandCount: await state.pendingCommandCount(),
-      pendingActionCount: await state.pendingActionCount()
+      pendingActionCount: await state.pendingActionCount(),
+      diagnostics: state.getBridgeDiagnostics ? await state.getBridgeDiagnostics() : null
     };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
