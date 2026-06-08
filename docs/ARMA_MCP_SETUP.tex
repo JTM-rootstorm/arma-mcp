@@ -333,13 +333,38 @@ Environment variables \code{ARMA\_MCP\_HOST}, \code{ARMA\_MCP\_PORT}, and
 
 \section{Available MCP Tools}
 
+The current sidecar exposes dotted MCP tools for bridge diagnostics, Eden reads
+and writes, catalog work, camera/screenshot capture, data-only composition
+helpers, terrain sampling, and procedural generators. Useful starting tools are:
+
 \begin{itemize}
-  \item \code{arma\_ping}: check sidecar, bridge, Eden connection, and pending commands.
-  \item \code{arma\_request\_editor\_snapshot}: queue a selection or all-objects snapshot request.
-  \item \code{arma\_get\_editor\_snapshot}: return the latest stored Eden snapshot.
-  \item \code{arma\_generate\_checkpoint\_plan}: generate a dry-run checkpoint plan.
-  \item \code{arma\_queue\_apply\_plan}: queue a reviewed structured plan for Eden.
-  \item \code{arma\_get\_bridge\_events}: inspect recent bridge events and Eden results.
+  \item \code{arma.ping}: check MCP stdio process health without waiting on Eden.
+  \item \code{arma.bridge.diagnostics}: report stdio mode, listener ownership,
+        bridge reachability, recent bridge activity, and recent bridge errors.
+  \item \code{arma.bridge.get\_status}: check pending actions/results and the
+        latest Eden bridge contact.
+  \item \code{arma.bridge.get\_capabilities}: inspect addon/runtime capabilities.
+  \item \code{arma.eden.get\_status}, \code{arma.eden.get\_selection}, and
+        \code{arma.eden.list\_entities}: inspect live Eden state before planning.
+  \item \code{arma.eden.batch}, \code{arma.eden.validate\_plan}, and
+        \code{arma.eden.apply\_composition}: dry-run and apply reviewed changes.
+  \item \code{arma.catalog.scanStart}, \code{arma.catalog.scanStatus}, and
+        \code{arma.catalog.scanPoll}: start, inspect, and advance bounded
+        catalog scan work.
+  \item \code{arma.catalog.scanCancel}: cancel a running catalog scan.
+  \item \code{arma.catalog.scanFinalize}: finish a completed bounded scan.
+  \item \code{arma.catalog.scanRepair}: repair stale scan bookkeeping.
+\end{itemize}
+
+Legacy MVP aliases remain available for compatibility:
+
+\begin{itemize}
+  \item \code{arma\_ping}
+  \item \code{arma\_request\_editor\_snapshot}
+  \item \code{arma\_get\_editor\_snapshot}
+  \item \code{arma\_generate\_checkpoint\_plan}
+  \item \code{arma\_queue\_apply\_plan}
+  \item \code{arma\_get\_bridge\_events}
 \end{itemize}
 
 \section{Troubleshooting}
@@ -356,6 +381,8 @@ Environment variables \code{ARMA\_MCP\_HOST}, \code{ARMA\_MCP\_PORT}, and
 \subsection{\code{arma\_ping} Works But Eden Is Not Connected}
 
 \begin{itemize}
+  \item Run \code{arma.bridge.diagnostics} to confirm whether Codex stdio is
+        reusing an existing bridge or owns the HTTP listener.
   \item Confirm Arma is running with the addon loaded.
   \item Confirm the native extension is available to Arma as \code{ArmaMCP\_x64.dll}
         for Proton/Windows.

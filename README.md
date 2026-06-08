@@ -12,10 +12,10 @@ Codex MCP client
 
 The current MVP can:
 
-- expose MCP tools for ping, snapshots, checkpoint plan generation, plan queueing, and bridge events;
+- expose MCP tools for bridge diagnostics, Eden reads/writes, catalog search/scan/measurement, screenshots, composition helpers, procedural generators, and legacy MVP snapshot aliases;
 - receive Eden selection snapshots through a localhost bearer-token bridge;
-- queue structured `requestSnapshot` and `applyPlan` commands for Eden;
-- build a HEMTT addon with Eden polling, snapshot capture, and safe create-object/create-marker plan application;
+- queue typed, policy-checked Eden actions through the bridge;
+- build a HEMTT addon with Eden polling, snapshot capture, typed action dispatch, safe batch operations, composition capture/apply, catalog scanning, measurement, and camera/screenshot helpers;
 - build native Linux `.so` and Windows/Proton `.dll` extension binaries when local compilers are present.
 
 ## Safety Limits
@@ -24,7 +24,7 @@ The current MVP can:
 - `/bridge/*` endpoints require `Authorization: Bearer <ARMA_MCP_TOKEN>`.
 - No raw SQF execution MCP tool is exposed.
 - No remote execution or public server control is included.
-- MVP plan operations are restricted to `createObject` and `createMarker`.
+- Write/destructive tools use typed schemas, policy checks, dry-runs, and explicit confirmation where required.
 
 ## Build
 
@@ -72,7 +72,7 @@ See [docs/CODEX_MCP_CONFIG.md](docs/CODEX_MCP_CONFIG.md).
 2. Start the sidecar directly with `node sidecar/dist/index.js`, or start one bridge with `npm run dev:http` and point Codex MCP at it with `ARMA_MCP_SKIP_HTTP_LISTEN=1`.
 3. Build/load the addon with HEMTT.
 4. Open Eden and select an object.
-5. Use the MCP tools to request/read a snapshot, generate a checkpoint plan, set `dryRun=false`, queue it, then inspect bridge events.
+5. Use `arma.ping`, `arma.bridge.diagnostics`, `arma.bridge.get_status`, `arma.bridge.get_capabilities`, and the Eden read/write tools to inspect, dry-run, apply, and re-read changes.
 
 See [docs/EDEN_TESTING.md](docs/EDEN_TESTING.md).
 

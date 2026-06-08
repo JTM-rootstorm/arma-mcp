@@ -39,6 +39,7 @@ token=dev-token
 
 ```text
 arma.ping
+arma.bridge.diagnostics
 arma.bridge.get_status
 arma.bridge.ping
 arma.bridge.get_capabilities
