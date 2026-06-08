@@ -65,6 +65,7 @@ codex mcp add arma-mcp \
 ```
 
 See [docs/CODEX_MCP_CONFIG.md](docs/CODEX_MCP_CONFIG.md).
+For the current tool surface, see [docs/TOOL_REFERENCE.md](docs/TOOL_REFERENCE.md).
 
 ## Eden Test
 

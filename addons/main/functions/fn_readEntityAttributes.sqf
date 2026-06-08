@@ -8,6 +8,7 @@ private _defaultAttributes = switch (_entityType) do {
     case "Marker": {["text", "markerType", "color", "alpha", "size", "angle", "brush", "shape"]};
     case "Trigger": {["sizeA", "sizeB", "angle", "isRectangle", "activationBy", "activationType", "repeatable", "condition", "onActivation", "onDeactivation"]};
     case "Waypoint": {["type", "behavior", "combatMode", "speedMode", "formation", "condition", "onActivation", "timeout", "completionRadius"]};
+    case "Layer": {["layerId"]};
     default {["name", "init", "description", "presence", "presenceCondition", "lock"]};
 };
 
@@ -30,6 +31,16 @@ private _toEdenAttribute = {
 
 private _attributes = createHashMap;
 private _warnings = [];
+
+if (_entityType isEqualTo "Layer") exitWith {
+    if (_entity isEqualType 0) then {
+        _attributes set ["layerId", _entity];
+    };
+    createHashMapFromArray [
+        ["attributes", _attributes],
+        ["warnings", ["Layer attribute reads are limited to layerId in this synthetic-safe path."]]
+    ]
+};
 
 {
     private _attributeName = _x;

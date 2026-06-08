@@ -33,6 +33,10 @@ private _updated = [];
 private _deleted = [];
 private _selected = [];
 private _warnings = _validation getOrDefault ["warnings", []];
+private _isMissingEntity = {
+    params ["_entity"];
+    _entity isEqualTo objNull
+};
 
 collect3DENHistory {
     {
@@ -52,11 +56,18 @@ collect3DENHistory {
                     _created pushBack _x;
                 } forEach (_createResult getOrDefault ["created", []]);
         } else {
+            if (_op isEqualTo "create_layer") then {
+                private _layerParams = +_x;
+                _layerParams set ["dryRun", false];
+                private _layerResult = ["create", _layerParams] call AMCP_fnc_layerOps;
+                _created append (_layerResult getOrDefault ["created", []]);
+                _warnings append (_layerResult getOrDefault ["warnings", []]);
+        } else {
             switch (_op) do {
             case "set_transform": {
                 private _entityId = _x getOrDefault ["entityId", ""];
                 private _entity = [_entityId] call AMCP_fnc_resolveEntity;
-                if (!isNull _entity) then {
+                if (!([_entity] call _isMissingEntity)) then {
                     private _previous = [_entity, _x getOrDefault ["transform", createHashMap]] call AMCP_fnc_applyTransform;
                     _updated pushBack createHashMapFromArray [
                         ["edenId", _entityId],
@@ -67,7 +78,7 @@ collect3DENHistory {
             case "set_attributes": {
                 private _entityId = _x getOrDefault ["entityId", ""];
                 private _entity = [_entityId] call AMCP_fnc_resolveEntity;
-                if (!isNull _entity) then {
+                if (!([_entity] call _isMissingEntity)) then {
                     private _attributeResult = [_entity, _x getOrDefault ["attributes", createHashMap]] call AMCP_fnc_applyAttributes;
                     _updated pushBack createHashMapFromArray [
                         ["edenId", _entityId],
@@ -84,7 +95,7 @@ collect3DENHistory {
                 private _entities = [];
                 {
                     private _entity = [_x] call AMCP_fnc_resolveEntity;
-                    if (!isNull _entity) then {
+                    if (!([_entity] call _isMissingEntity)) then {
                         _entities pushBack _entity;
                         _deleted pushBack _x;
                     };
@@ -97,17 +108,54 @@ collect3DENHistory {
                 private _entities = [];
                 {
                     private _entity = [_x] call AMCP_fnc_resolveEntity;
-                    if (!isNull _entity) then {
+                    if (!([_entity] call _isMissingEntity)) then {
                         _entities pushBack _entity;
                         _selected pushBack _x;
                     };
                 } forEach (_x getOrDefault ["entityIds", []]);
                 set3DENSelected _entities;
             };
+            case "assign_layer": {
+                private _layerParams = +_x;
+                _layerParams set ["dryRun", false];
+                private _layerResult = ["assign", _layerParams] call AMCP_fnc_layerOps;
+                {
+                    _updated pushBack createHashMapFromArray [["edenId", _x], ["op", "assign_layer"]];
+                } forEach (_layerResult getOrDefault ["updated", []]);
+                _warnings append (_layerResult getOrDefault ["warnings", []]);
+            };
+            case "remove_from_layer": {
+                private _layerParams = +_x;
+                _layerParams set ["dryRun", false];
+                private _layerResult = ["remove", _layerParams] call AMCP_fnc_layerOps;
+                {
+                    _updated pushBack createHashMapFromArray [["edenId", _x], ["op", "remove_from_layer"]];
+                } forEach (_layerResult getOrDefault ["updated", []]);
+                _warnings append (_layerResult getOrDefault ["warnings", []]);
+            };
+            case "sync_entities": {
+                private _connectionParams = +_x;
+                _connectionParams set ["dryRun", false];
+                private _connectionResult = ["sync", _connectionParams] call AMCP_fnc_connectionOps;
+                {
+                    _updated pushBack createHashMapFromArray [["edenId", _x], ["op", "sync_entities"]];
+                } forEach (_connectionResult getOrDefault ["updated", []]);
+                _warnings append (_connectionResult getOrDefault ["warnings", []]);
+            };
+            case "unsync_entities": {
+                private _connectionParams = +_x;
+                _connectionParams set ["dryRun", false];
+                private _connectionResult = ["unsync", _connectionParams] call AMCP_fnc_connectionOps;
+                {
+                    _updated pushBack createHashMapFromArray [["edenId", _x], ["op", "unsync_entities"]];
+                } forEach (_connectionResult getOrDefault ["updated", []]);
+                _warnings append (_connectionResult getOrDefault ["warnings", []]);
+            };
             default {
                 _warnings pushBack format ["Skipping unsupported batch operation %1", _op];
             };
             };
+        };
         };
     } forEach _operations;
 };

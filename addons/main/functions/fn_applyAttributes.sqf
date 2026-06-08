@@ -11,6 +11,24 @@ private _toEdenAttribute = {
         case "description": {"Description"};
         case "presence": {"Presence"};
         case "presencecondition": {"PresenceCondition"};
+        case "markertype": {"markerType"};
+        case "text": {"text"};
+        case "color": {"color"};
+        case "alpha": {"alpha"};
+        case "size": {"size"};
+        case "angle": {"angle"};
+        case "brush": {"brush"};
+        case "shape": {"shape"};
+        case "sizea": {"sizeA"};
+        case "sizeb": {"sizeB"};
+        case "isrectangle": {"isRectangle"};
+        case "activationby": {"activationBy"};
+        case "activationtype": {"activationType"};
+        case "onactivation": {"onActivation"};
+        case "ondeactivation": {"onDeactivation"};
+        case "completionradius": {"completionRadius"};
+        case "combatmode": {"combatMode"};
+        case "speedmode": {"speedMode"};
         default {_name};
     }
 };

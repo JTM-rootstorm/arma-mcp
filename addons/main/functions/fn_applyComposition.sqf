@@ -36,12 +36,82 @@ private _cos = cos _anchorDir;
     _operations pushBack _op;
 } forEach (_composition getOrDefault ["entities", []]);
 
+{
+    private _from = _x getOrDefault ["from", ""];
+    private _to = _x getOrDefault ["to", ""];
+    if (_from isNotEqualTo "" && {_to isNotEqualTo ""}) then {
+        _operations pushBack createHashMapFromArray [
+            ["op", "sync_entities"],
+            ["clientRef", format ["connection_%1", _forEachIndex + 1]],
+            ["connectionType", _x getOrDefault ["type", "Sync"]],
+            ["entityIds", [_from]],
+            ["targetEntityId", _to],
+            ["deferClientRefs", true]
+        ];
+    };
+} forEach (_composition getOrDefault ["connections", []]);
+
+if (_params getOrDefault ["dryRun", true]) exitWith {
+    private _entityCounts = createHashMap;
+    {
+        private _type = _x getOrDefault ["type", "Object"];
+        _entityCounts set [_type, (_entityCounts getOrDefault [_type, 0]) + 1];
+    } forEach (_composition getOrDefault ["entities", []]);
+    createHashMapFromArray [
+        ["dryRun", true],
+        ["operationCount", count _operations],
+        ["wouldCreate", count (_composition getOrDefault ["entities", []])],
+        ["wouldConnect", count (_composition getOrDefault ["connections", []])],
+        ["entityCounts", _entityCounts],
+        ["operations", _operations],
+        ["warnings", []],
+        ["errors", []]
+    ]
+};
+
 private _batch = createHashMapFromArray [
-    ["dryRun", _params getOrDefault ["dryRun", true]],
+    ["dryRun", false],
     ["confirmation", _params getOrDefault ["confirmation", createHashMap]],
     ["historyLabel", format ["Arma MCP: Apply %1", _composition getOrDefault ["name", "composition"]]],
-    ["operations", _operations],
+    ["operations", _operations select {!(_x getOrDefault ["deferClientRefs", false])}],
     ["policyWarnings", _params getOrDefault ["policyWarnings", []]]
 ];
 
-[_batch] call AMCP_fnc_applyBatch
+private _result = [_batch] call AMCP_fnc_applyBatch;
+private _refToEdenId = createHashMap;
+{
+    private _clientRef = _x getOrDefault ["clientRef", ""];
+    private _edenId = _x getOrDefault ["edenId", ""];
+    if (_clientRef isNotEqualTo "" && {_edenId isNotEqualTo ""}) then {
+        _refToEdenId set [_clientRef, _edenId];
+    };
+} forEach (_result getOrDefault ["created", []]);
+
+private _relationshipUpdated = [];
+private _relationshipMissing = [];
+private _warnings = _result getOrDefault ["warnings", []];
+{
+    private _sourceRef = _x getOrDefault ["from", ""];
+    private _targetRef = _x getOrDefault ["to", ""];
+    private _sourceId = _refToEdenId getOrDefault [_sourceRef, ""];
+    private _targetId = _refToEdenId getOrDefault [_targetRef, ""];
+    if (_sourceId isEqualTo "" || {_targetId isEqualTo ""}) then {
+        _relationshipMissing pushBack _x;
+    } else {
+        private _connectionResult = ["sync", createHashMapFromArray [
+            ["dryRun", false],
+            ["connectionType", _x getOrDefault ["type", "Sync"]],
+            ["entityIds", [_sourceId]],
+            ["targetEntityId", _targetId]
+        ]] call AMCP_fnc_connectionOps;
+        _relationshipUpdated append (_connectionResult getOrDefault ["updated", []]);
+        _warnings append (_connectionResult getOrDefault ["warnings", []]);
+    };
+} forEach (_composition getOrDefault ["connections", []]);
+
+_result set ["relationships", createHashMapFromArray [
+    ["updated", _relationshipUpdated],
+    ["missing", _relationshipMissing]
+]];
+_result set ["warnings", _warnings];
+_result

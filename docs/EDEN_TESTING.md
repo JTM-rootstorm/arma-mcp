@@ -80,18 +80,32 @@ arma.eden.clear_selection
 arma.eden.batch
 ```
 
-Use at least two `create_entity` operations and one `create_marker` operation. The first call should use `dryRun=true`; the second can use `dryRun=false` after review.
+Use at least two `create_entity` operations, one `create_marker` operation with top-level `text`, and one `create_layer` plus `assign_layer` operation. The first call should use `dryRun=true`; the second can use `dryRun=false` after review.
 
-12. Test composition capture and apply:
+12. Test layers and syncs:
+
+```text
+arma.eden.list_layers
+arma.eden.create_layer
+arma.eden.assign_layer
+arma.eden.get_connections
+arma.eden.sync_entities
+arma.eden.get_synced
+arma.eden.unsync_entities
+```
+
+Use `dryRun=true` first for writes, then repeat with `dryRun=false` after review.
+
+13. Test composition capture and apply:
 
 ```text
 arma.eden.capture_composition
 arma.eden.apply_composition
 ```
 
-Capture a selected set, apply it at a nearby anchor with `dryRun=true`, then apply for real.
+Capture a mixed selected set. Include two synced entities if possible and call capture with `includeConnections=true`. Apply it at a nearby anchor with `dryRun=true`, then apply for real.
 
-13. Test the local procedural generators:
+14. Test the local procedural generators:
 
 ```text
 arma.eden.generate_road_checkpoint
@@ -104,7 +118,7 @@ arma.eden.generate_prop_wall
 
 Generators return dry-run batch plans only. Review and apply their `plan` through `arma.eden.batch`.
 
-14. Confirm Eden creates objects around the selected or supplied anchor. Press undo and confirm the operation rolls back if `collect3DENHistory` grouped the changes successfully.
+15. Confirm Eden creates objects around the selected or supplied anchor. Press undo and confirm the operation rolls back if `collect3DENHistory` grouped the changes successfully.
 
 The addon also attempts throttled selection snapshots via `OnSelectionChange`.
 

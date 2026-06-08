@@ -20,6 +20,7 @@ private _vectorDir = [0, 1, 0];
 private _vectorUp = [0, 0, 1];
 private _modelPath = "";
 private _bounds = createHashMapFromArray [["min", [0, 0, 0]], ["max", [0, 0, 0]]];
+private _warnings = [];
 
 if (_entity isEqualType objNull) then {
     _className = typeOf _entity;
@@ -37,6 +38,48 @@ if (_entity isEqualType objNull) then {
         ["min", _box param [0, [0, 0, 0]]],
         ["max", _box param [1, [0, 0, 0]]]
     ];
+} else {
+    if (_entity isEqualType "") then {
+        _className = markerType _entity;
+        _variableName = _entity;
+        _displayName = markerText _entity;
+        _positionATL = markerPos _entity;
+        _positionASL = ATLToASL _positionATL;
+        _dir = markerDir _entity;
+    } else {
+        if (_entity isEqualType grpNull) then {
+            _variableName = groupId _entity;
+            _displayName = groupId _entity;
+            private _leader = leader _entity;
+            if (!isNull _leader) then {
+                _positionATL = getPosATL _leader;
+                _positionASL = getPosASL _leader;
+                _dir = getDir _leader;
+            } else {
+                _warnings pushBack "Group has no live leader position; transform is advisory.";
+            };
+            _className = "Group";
+        } else {
+            if (_entity isEqualType []) then {
+                private _group = _entity param [0, grpNull];
+                private _index = _entity param [1, -1];
+                _className = waypointType _entity;
+                _variableName = format ["%1:%2", groupId _group, _index];
+                _displayName = _className;
+                _positionATL = waypointPosition _entity;
+                _positionASL = ATLToASL _positionATL;
+            } else {
+                if (_entity isEqualType 0) then {
+                    _className = "Layer";
+                    _variableName = format ["%1", _entity];
+                    _displayName = format ["Layer %1", _entity];
+                    _warnings pushBack "Layer display names are not fully exposed by this snapshot path; use layerId for stable in-session references.";
+                } else {
+                    _warnings pushBack format ["Snapshot type %1 has limited field support.", typeName _entity];
+                };
+            };
+        };
+    };
 };
 
 private _snapshot = createHashMapFromArray [
@@ -60,10 +103,74 @@ private _snapshot = createHashMapFromArray [
 if (_includeAttributes) then {
     private _attributeResult = [_entity, _entityType, _attributeNames] call AMCP_fnc_readEntityAttributes;
     _snapshot set ["attributes", _attributeResult getOrDefault ["attributes", createHashMap]];
-    private _warnings = _attributeResult getOrDefault ["warnings", []];
-    if ((count _warnings) > 0) then {
-        _snapshot set ["warnings", _warnings];
-    };
+    _warnings append (_attributeResult getOrDefault ["warnings", []]);
+};
+
+if (_entityType isEqualTo "Marker") then {
+    _snapshot set ["marker", createHashMapFromArray [
+        ["text", markerText _entity],
+        ["type", markerType _entity],
+        ["color", markerColor _entity],
+        ["shape", markerShape _entity],
+        ["size", markerSize _entity],
+        ["alpha", markerAlpha _entity],
+        ["dir", markerDir _entity]
+    ]];
+};
+
+if (_entityType isEqualTo "Group" && {_entity isEqualType grpNull}) then {
+    private _unitIds = [];
+    {
+        _unitIds pushBack ([_x, "Object"] call AMCP_fnc_registerEntity);
+    } forEach (units _entity);
+    _snapshot set ["group", createHashMapFromArray [
+        ["groupId", groupId _entity],
+        ["unitIds", _unitIds],
+        ["side", str (side _entity)]
+    ]];
+};
+
+if (_entityType isEqualTo "Waypoint" && {_entity isEqualType []}) then {
+    private _group = _entity param [0, grpNull];
+    _snapshot set ["waypoint", createHashMapFromArray [
+        ["groupId", if (_group isEqualType grpNull) then {[_group, "Group"] call AMCP_fnc_registerEntity} else {""}],
+        ["index", _entity param [1, -1]],
+        ["type", waypointType _entity],
+        ["positionATL", waypointPosition _entity]
+    ]];
+};
+
+if (_entityType isEqualTo "Layer" && {_entity isEqualType 0}) then {
+    private _childIds = [];
+    {
+        private _childType = typeName _x;
+        private _childId = if (_x isEqualType objNull) then {
+            [_x, ["Object", "Logic"] select (_x isKindOf "Logic")] call AMCP_fnc_registerEntity
+        } else {
+            if (_x isEqualType grpNull) then {
+                [_x, "Group"] call AMCP_fnc_registerEntity
+            } else {
+                if (_x isEqualType []) then {
+                    [_x, "Waypoint"] call AMCP_fnc_registerEntity
+                } else {
+                    if (_x isEqualType "") then {
+                        [_x, "Marker"] call AMCP_fnc_registerEntity
+                    } else {
+                        str _x
+                    };
+                };
+            };
+        };
+        _childIds pushBack createHashMapFromArray [["edenId", _childId], ["rawType", _childType]];
+    } forEach (get3DENLayerEntities _entity);
+    _snapshot set ["layer", createHashMapFromArray [
+        ["layerId", _entity],
+        ["children", _childIds]
+    ]];
+};
+
+if (_warnings isNotEqualTo []) then {
+    _snapshot set ["warnings", _warnings];
 };
 
 if (_includeConfig) then {

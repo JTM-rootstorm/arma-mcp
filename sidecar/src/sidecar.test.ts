@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { generateCheckpointPlan } from "./checkpointPlanner.js";
 import { ingestCatalogChunk, normalizeCatalogRecord } from "./catalog.js";
@@ -39,11 +40,12 @@ import { mirrorProfileScreenshot } from "./screenshotPaths.js";
 import { createRemoteBridgeState } from "./remoteBridgeState.js";
 import { compositionPlanSchema } from "./schema.js";
 import { createState } from "./state.js";
-import { actionPacketSchema, schemaVersion } from "./protocol.js";
+import { actionNameSchema, actionPacketSchema, schemaVersion } from "./protocol.js";
 import { enforceToolPolicy } from "./policy.js";
 
 const bridges: StartedBridge[] = [];
 const tempDirs: string[] = [];
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 afterEach(async () => {
   while (bridges.length > 0) {
@@ -905,6 +907,73 @@ describe("managed MCP discovery fallback", () => {
       "arma_request_editor_snapshot"
     ]) {
       expect(fallbackTools.has(toolName)).toBe(true);
+    }
+  });
+});
+
+describe("synthetic Eden action inventory", () => {
+  const sqf = (relativePath: string) => readFileSync(join(repoRoot, relativePath), "utf8");
+
+  it("keeps direct protocol actions advertised and dispatched by the addon", () => {
+    const capabilities = sqf("addons/main/functions/fn_getCapabilities.sqf");
+    const dispatcher = sqf("addons/main/functions/fn_dispatchAction.sqf");
+
+    const protocolActions = actionNameSchema.options;
+    const missing = protocolActions
+      .filter((action) => !capabilities.includes(`"${action}"`) || !dispatcher.includes(`case "${action}"`))
+      .map((action) => ({
+        action,
+        capability: capabilities.includes(`"${action}"`),
+        dispatcher: dispatcher.includes(`case "${action}"`)
+      }));
+
+    expect(missing).toEqual([]);
+  });
+
+  it("keeps managed-discovery fallback tools callable through arma_call", () => {
+    const source = sqf("sidecar/src/mcpServer.ts");
+    const missing = MCP_DISCOVERY_FALLBACK_TOOL_NAMES.filter((toolName) => !source.includes(`case "${toolName}"`));
+
+    expect(missing).toEqual([]);
+  });
+
+  it("keeps SQF batch validator and executor operation registries aligned", () => {
+    const validator = sqf("addons/main/functions/fn_validateBatch.sqf");
+    const executor = sqf("addons/main/functions/fn_applyBatch.sqf");
+    const requiredOps = [
+      "create_entity",
+      "create_marker",
+      "create_trigger",
+      "create_waypoint",
+      "create_module",
+      "create_layer",
+      "set_transform",
+      "set_attributes",
+      "delete_entity",
+      "select_entities",
+      "assign_layer",
+      "remove_from_layer",
+      "sync_entities",
+      "unsync_entities"
+    ];
+
+    const missing = requiredOps
+      .filter((op) => !validator.includes(`"${op}"`) || !executor.includes(`"${op}"`))
+      .map((op) => ({
+        op,
+        validator: validator.includes(`"${op}"`),
+        executor: executor.includes(`"${op}"`)
+      }));
+
+    expect(missing).toEqual([]);
+  });
+
+  it("normalizes marker top-level fields before create/apply", () => {
+    const createEntity = sqf("addons/main/functions/fn_createEntity.sqf");
+
+    expect(createEntity).toContain('if (_entityType isEqualTo "Marker")');
+    for (const field of ["text", "markerType", "color", "shape", "brush", "alpha", "size", "angle"]) {
+      expect(createEntity).toContain(field);
     }
   });
 });

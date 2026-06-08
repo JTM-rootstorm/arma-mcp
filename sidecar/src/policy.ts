@@ -55,7 +55,7 @@ export type ToolPolicyInput = {
 
 export function enforceToolPolicy(input: ToolPolicyInput): { warnings: string[] } {
   const warnings: string[] = [];
-  const destructive = input.action === "eden.delete_entities" || containsDeleteOperation(input.operations);
+  const destructive = input.action === "eden.delete_entities" || input.action === "eden.delete_layer" || containsDeleteOperation(input.operations);
   if (destructive && !input.dryRun && input.confirmation?.confirmed !== true) {
     throw new Error("Destructive Eden actions require confirmation.confirmed=true when dryRun=false.");
   }
@@ -102,6 +102,6 @@ function containsDeleteOperation(operations: unknown[] | undefined): boolean {
     if (!operation || typeof operation !== "object") {
       return false;
     }
-    return (operation as Record<string, unknown>).op === "delete_entity";
+    return ["delete_entity", "delete_layer"].includes(String((operation as Record<string, unknown>).op ?? ""));
   });
 }

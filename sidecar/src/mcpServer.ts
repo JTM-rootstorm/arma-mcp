@@ -103,6 +103,7 @@ export const MCP_DISCOVERY_FALLBACK_TOOL_NAMES = [
   "arma.catalog.findSimilar",
   "arma.catalog.findByDimensions",
   "arma.assets.search_classes",
+  "arma.assets.get_class",
   "arma.composition.plan",
   "arma.composition.previewLocal",
   "arma.composition.exportSqf",
@@ -114,7 +115,17 @@ export const MCP_DISCOVERY_FALLBACK_TOOL_NAMES = [
   "arma.eden.create_entity",
   "arma.eden.find_entities",
   "arma.eden.getObject",
+  "arma.eden.get_connections",
+  "arma.eden.get_synced",
   "arma.eden.getSynced",
+  "arma.eden.list_layers",
+  "arma.eden.create_layer",
+  "arma.eden.assign_layer",
+  "arma.eden.remove_from_layer",
+  "arma.eden.set_layer_attributes",
+  "arma.eden.delete_layer",
+  "arma.eden.sync_entities",
+  "arma.eden.unsync_entities",
   "arma.eden.generate_aa_site",
   "arma.eden.generate_cover_line",
   "arma.eden.generate_lz",
@@ -337,6 +348,10 @@ const assetSearchToolSchema = z.object({
   factions: z.array(z.string().min(1).max(80)).max(20).optional(),
   limit: z.number().int().positive().max(100).default(25)
 });
+const assetGetClassToolSchema = z.object({
+  className: z.string().trim().min(1).max(200),
+  configRoot: z.string().trim().min(1).max(80).optional()
+});
 const terrainSampleAreaToolSchema = z.object({
   centerATL: vector3Schema,
   radiusMeters: z.number().positive().max(500),
@@ -380,6 +395,41 @@ const selectionToolSchema = z.object({
 const focusEntitiesToolSchema = z.object({
   entityIds: z.array(entityIdSchema).min(1).max(20)
 });
+const connectionToolSchema = z.object({
+  entityIds: z.array(entityIdSchema).min(1).max(100).optional(),
+  entityId: entityIdSchema.optional(),
+  connectionType: z.string().trim().min(1).max(80).default("Sync")
+});
+const mutateConnectionToolSchema = writeBaseSchema.extend({
+  entityIds: z.array(entityIdSchema).min(1).max(100),
+  targetEntityId: entityIdSchema,
+  connectionType: z.string().trim().min(1).max(80).default("Sync")
+});
+const createLayerToolSchema = writeBaseSchema.extend({
+  name: z.string().trim().min(1).max(160),
+  parentLayerId: z.number().int().default(-1)
+});
+const layerRefSchema = z.object({
+  layerId: z.number().int().optional(),
+  name: z.string().trim().min(1).max(160).optional(),
+  createIfMissing: z.boolean().default(false),
+  parentLayerId: z.number().int().default(-1)
+});
+const assignLayerToolSchema = writeBaseSchema.extend({
+  entityIds: z.array(entityIdSchema).min(1).max(100),
+  layer: layerRefSchema
+});
+const removeFromLayerToolSchema = writeBaseSchema.extend({
+  entityIds: z.array(entityIdSchema).min(1).max(100)
+});
+const setLayerAttributesToolSchema = writeBaseSchema.extend({
+  layer: layerRefSchema,
+  attributes: z.record(z.string(), z.unknown())
+});
+const deleteLayerToolSchema = writeBaseSchema.extend({
+  layer: layerRefSchema,
+  deleteEntities: z.boolean().default(false)
+});
 const batchOperationSchema = z
   .object({
     op: z.enum([
@@ -389,7 +439,10 @@ const batchOperationSchema = z
       "delete_entity",
       "select_entities",
       "sync_entities",
+      "unsync_entities",
       "assign_layer",
+      "remove_from_layer",
+      "create_layer",
       "create_marker",
       "create_trigger",
       "create_waypoint",
@@ -398,12 +451,21 @@ const batchOperationSchema = z
     clientRef: z.string().min(1).max(120).optional(),
     entityId: entityIdSchema.optional(),
     entityIds: z.array(entityIdSchema).max(100).optional(),
+    targetEntityId: entityIdSchema.optional(),
+    connectionType: z.string().trim().min(1).max(80).optional(),
     type: entityTypeSchema.optional(),
+    name: z.string().trim().min(1).max(160).optional(),
     className: z.string().trim().min(1).max(160).optional(),
     transform: transformSchema.optional(),
     attributes: z.record(z.string(), z.unknown()).optional(),
     text: z.string().max(500).optional(),
-    layer: z.string().max(160).optional()
+    markerType: z.string().trim().min(1).max(80).optional(),
+    color: z.string().trim().min(1).max(80).optional(),
+    shape: z.string().trim().min(1).max(80).optional(),
+    size: z.union([z.number(), z.tuple([z.number(), z.number()])]).optional(),
+    alpha: z.number().min(0).max(1).optional(),
+    layer: z.union([z.string().max(160), layerRefSchema]).optional(),
+    parentLayerId: z.number().int().optional()
   })
   .strict();
 const batchToolSchema = writeBaseSchema.extend({
@@ -659,6 +721,15 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig,
     assetSearchToolSchema,
     "Search Arma Classes"
   );
+  registerActionTool(
+    server,
+    state,
+    "arma.assets.get_class",
+    "assets.get_class",
+    "read",
+    assetGetClassToolSchema,
+    "Get Arma Class"
+  );
   registerCatalogTools(server, state);
   registerCatalogMeasurementTools(server, state);
   registerEdenInspectionAliasTools(server, state);
@@ -756,6 +827,88 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig,
     "write",
     applyCompositionToolSchema,
     "Apply Composition"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.get_connections",
+    "eden.get_connections",
+    "read",
+    connectionToolSchema,
+    "Get Eden Connections"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.get_synced",
+    "eden.get_synced",
+    "read",
+    connectionToolSchema,
+    "Get Eden Sync Links"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.sync_entities",
+    "eden.sync_entities",
+    "write",
+    mutateConnectionToolSchema,
+    "Sync Eden Entities"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.unsync_entities",
+    "eden.unsync_entities",
+    "write",
+    mutateConnectionToolSchema,
+    "Unsync Eden Entities"
+  );
+  registerActionTool(server, state, "arma.eden.list_layers", "eden.list_layers", "read", emptyInputSchema, "List Eden Layers");
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.create_layer",
+    "eden.create_layer",
+    "write",
+    createLayerToolSchema,
+    "Create Eden Layer"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.assign_layer",
+    "eden.assign_layer",
+    "write",
+    assignLayerToolSchema,
+    "Assign Eden Layer"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.remove_from_layer",
+    "eden.remove_from_layer",
+    "write",
+    removeFromLayerToolSchema,
+    "Remove From Eden Layer"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.set_layer_attributes",
+    "eden.set_layer_attributes",
+    "write",
+    setLayerAttributesToolSchema,
+    "Set Eden Layer Attributes"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.delete_layer",
+    "eden.delete_layer",
+    "destructive",
+    deleteLayerToolSchema,
+    "Delete Eden Layer"
   );
   registerLocalGeneratorTool(server, "arma.eden.generate_road_checkpoint", roadCheckpointGeneratorSchema, (input) =>
     generateRoadCheckpoint(input)
@@ -1226,19 +1379,13 @@ function registerEdenInspectionAliasTools(server: McpServer, state: ArmaMcpState
     "arma.eden.getSynced",
     {
       title: "Get Eden Sync Relationships",
-      description: "Return sync relationship fields currently exposed by Eden snapshots.",
+      description: "Return Eden Sync connections for one entity.",
       inputSchema: getEntitySnapshotToolSchema.shape
     },
     async (input) => {
       const parsed = getEntitySnapshotToolSchema.parse(input);
-      const result = await dispatchCatalogAction(state, "eden.get_entity_snapshot", parsed, 60_000);
-      const snapshot = asRecord(asRecord(result.result).snapshot);
-      return jsonToolResult({
-        entityId: parsed.entityId,
-        synced_to: snapshot.synced_to ?? [],
-        attached_to: snapshot.attached_to ?? null,
-        note: "Sync relationship extraction is limited to fields currently exposed by the Eden snapshot handler."
-      });
+      const result = await dispatchCatalogAction(state, "eden.get_synced", { entityId: parsed.entityId }, 60_000);
+      return jsonToolResult(result.result);
     }
   );
 
@@ -2697,6 +2844,8 @@ async function callManagedDiscoveryFallbackTool(
     }
     case "arma.assets.search_classes":
       return executeActionTool(state, "assets.search_classes", "read", assetSearchToolSchema, input);
+    case "arma.assets.get_class":
+      return executeActionTool(state, "assets.get_class", "read", assetGetClassToolSchema, input);
     case "arma.composition.plan": {
       const parsed = compositionPlanToolSchema.parse(input);
       return createCatalogCompositionPlan(parsed);
@@ -2733,16 +2882,13 @@ async function callManagedDiscoveryFallbackTool(
       const result = await dispatchCatalogAction(state, "eden.get_entity_snapshot", parsed, 60_000);
       return withCatalogDb((catalogDb) => enrichEdenResult(catalogDb, result.result));
     }
+    case "arma.eden.get_connections":
+      return executeActionTool(state, "eden.get_connections", "read", connectionToolSchema, input);
+    case "arma.eden.get_synced":
+      return executeActionTool(state, "eden.get_synced", "read", connectionToolSchema, input);
     case "arma.eden.getSynced": {
       const parsed = getEntitySnapshotToolSchema.parse(input);
-      const result = await dispatchCatalogAction(state, "eden.get_entity_snapshot", parsed, 60_000);
-      const snapshot = asRecord(asRecord(result.result).snapshot);
-      return {
-        entityId: parsed.entityId,
-        synced_to: snapshot.synced_to ?? [],
-        attached_to: snapshot.attached_to ?? null,
-        note: "Sync relationship extraction is limited to fields currently exposed by the Eden snapshot handler."
-      };
+      return executeActionTool(state, "eden.get_synced", "read", connectionToolSchema, { entityId: parsed.entityId });
     }
     case "arma.eden.generate_aa_site":
       return generateAaSite(siteGeneratorSchema.parse(input));
@@ -2768,8 +2914,24 @@ async function callManagedDiscoveryFallbackTool(
     }
     case "arma.eden.list_entities":
       return executeActionTool(state, "eden.list_entities", "read", entityListToolSchema, input);
+    case "arma.eden.list_layers":
+      return executeActionTool(state, "eden.list_layers", "read", emptyInputSchema, input);
+    case "arma.eden.create_layer":
+      return executeActionTool(state, "eden.create_layer", "write", createLayerToolSchema, input);
+    case "arma.eden.assign_layer":
+      return executeActionTool(state, "eden.assign_layer", "write", assignLayerToolSchema, input);
+    case "arma.eden.remove_from_layer":
+      return executeActionTool(state, "eden.remove_from_layer", "write", removeFromLayerToolSchema, input);
+    case "arma.eden.set_layer_attributes":
+      return executeActionTool(state, "eden.set_layer_attributes", "write", setLayerAttributesToolSchema, input);
+    case "arma.eden.delete_layer":
+      return executeActionTool(state, "eden.delete_layer", "destructive", deleteLayerToolSchema, input);
     case "arma.eden.set_entity_transform":
       return executeActionTool(state, "eden.set_entity_transform", "write", setEntityTransformToolSchema, input);
+    case "arma.eden.sync_entities":
+      return executeActionTool(state, "eden.sync_entities", "write", mutateConnectionToolSchema, input);
+    case "arma.eden.unsync_entities":
+      return executeActionTool(state, "eden.unsync_entities", "write", mutateConnectionToolSchema, input);
     case "arma.eden.validate_plan":
       return executeActionTool(state, "eden.validate_plan", "read", validatePlanToolSchema, input);
     case "arma.terrain.sample_area":

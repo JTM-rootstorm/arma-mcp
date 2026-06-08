@@ -26,11 +26,14 @@ class CfgFunctions {
             class applyComposition {};
             class captureComposition {};
             class captureSelection {};
+            class connectionOps {};
             class createEntity {};
             class dispatchAction {};
             class edenGetStatus {};
             class edenListEntities {};
             class getCapabilities {};
+            class getClassDetails {};
+            class layerOps {};
             class log {};
             class measureClass {};
             class pollCommands {};

@@ -19,7 +19,11 @@ The Eden action suite exposes typed tools instead of raw SQF execution.
 - `arma.eden.get_entity_snapshot`
 - `arma.eden.get_entities`
 - `arma.eden.get_entity_attributes`
+- `arma.eden.get_connections`
+- `arma.eden.get_synced`
+- `arma.eden.list_layers`
 - `arma.assets.search_classes`
+- `arma.assets.get_class`
 - `arma.terrain.sample_area`
 
 Entity IDs are session-local bridge IDs. They are refreshed as entities are read and are not durable mission identifiers.
@@ -36,6 +40,13 @@ Entity IDs are session-local bridge IDs. They are refreshed as entities are read
 - `arma.eden.focus_entities`
 - `arma.eden.batch`
 - `arma.eden.validate_plan`
+- `arma.eden.sync_entities`
+- `arma.eden.unsync_entities`
+- `arma.eden.create_layer`
+- `arma.eden.assign_layer`
+- `arma.eden.remove_from_layer`
+- `arma.eden.set_layer_attributes`
+- `arma.eden.delete_layer`
 
 Write tools default to dry-run where mutation is possible. Destructive operations require:
 
@@ -63,10 +74,15 @@ Attribute writes are allowlisted. Sensitive scripting fields such as `init`, tri
 
 Generators return dry-run `arma.eden.batch` plans and do not mutate Eden directly. Apply reviewed plans with `arma.eden.batch`.
 
+## Implemented With Live-Smoke Caveats
+
+- Layer tools use Eden layer IDs plus a local name registry for created layers. Display-name reads and rich layer attribute edits are limited by the public 3DEN scripting surface.
+- Sync tools use Eden `Sync` connections by default and can read/add/remove other 3DEN connection classes when supplied.
+- Mixed composition capture/apply preserves copied local sync links by `clientRef`.
+- Marker top-level batch fields such as `text`, `markerType`, `color`, `shape`, `size`, and `alpha` are normalized into Eden marker attributes before apply.
+
 ## Unsupported Or Best Effort
 
-- Layer creation and assignment are represented in plans but depend on Eden command support and still need a full in-game smoke pass.
-- Sync/group connection helpers are reserved in the protocol but are not fully implemented yet.
 - Collision and road-aware placement validation are not implemented.
 - Class search scans `CfgVehicles` at runtime and is intentionally simple until an asset index exists.
 - Terrain sampling provides height, water state, and approximate slope only.

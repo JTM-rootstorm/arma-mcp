@@ -19,6 +19,10 @@ private _entityMissing = {
         ["details", createHashMapFromArray [["entityId", _entityId]]]
     ]
 };
+private _isMissingEntity = {
+    params ["_entity"];
+    _entity isEqualTo objNull
+};
 
 switch (_action) do {
     case "bridge.ping": {
@@ -35,8 +39,23 @@ switch (_action) do {
         _result = [] call AMCP_fnc_edenGetStatus;
     };
     case "eden.get_selection": {
-        private _selected = get3DENSelected "object";
-        private _entities = _selected apply {[_x, "Object", _params] call AMCP_fnc_buildEntitySnapshot};
+        private _typePairs = [
+            ["object", "Object"],
+            ["group", "Group"],
+            ["trigger", "Trigger"],
+            ["logic", "Logic"],
+            ["waypoint", "Waypoint"],
+            ["marker", "Marker"],
+            ["layer", "Layer"]
+        ];
+        private _entities = [];
+        {
+            private _edenSelectionType = _x select 0;
+            private _entityType = _x select 1;
+            {
+                _entities pushBack ([_x, _entityType, _params] call AMCP_fnc_buildEntitySnapshot);
+            } forEach (get3DENSelected _edenSelectionType);
+        } forEach _typePairs;
         _result = createHashMapFromArray [
             ["entities", _entities]
         ];
@@ -50,7 +69,7 @@ switch (_action) do {
     case "eden.get_entity_snapshot": {
         private _entityId = _params getOrDefault ["entityId", ""];
         private _entity = [_entityId] call AMCP_fnc_resolveEntity;
-        if (isNull _entity) then {
+        if ([_entity] call _isMissingEntity) then {
             _ok = false;
             _error = [_entityId] call _entityMissing;
         } else {
@@ -69,10 +88,17 @@ switch (_action) do {
         private _missing = [];
         {
             private _entity = [_x] call AMCP_fnc_resolveEntity;
-            if (isNull _entity) then {
+            if ([_entity] call _isMissingEntity) then {
                 _missing pushBack _x;
             } else {
-                _entities pushBack ([_entity, "Object", _params] call AMCP_fnc_buildEntitySnapshot);
+                private _entityType = "Object";
+                if ((_x find "eden:marker:") isEqualTo 0) then {_entityType = "Marker"};
+                if ((_x find "eden:trigger:") isEqualTo 0) then {_entityType = "Trigger"};
+                if ((_x find "eden:logic:") isEqualTo 0) then {_entityType = "Logic"};
+                if ((_x find "eden:group:") isEqualTo 0) then {_entityType = "Group"};
+                if ((_x find "eden:waypoint:") isEqualTo 0) then {_entityType = "Waypoint"};
+                if ((_x find "eden:layer:") isEqualTo 0) then {_entityType = "Layer"};
+                _entities pushBack ([_entity, _entityType, _params] call AMCP_fnc_buildEntitySnapshot);
             };
         } forEach _entityIds;
         _result = createHashMapFromArray [
@@ -83,7 +109,7 @@ switch (_action) do {
     case "eden.get_entity_attributes": {
         private _entityId = _params getOrDefault ["entityId", ""];
         private _entity = [_entityId] call AMCP_fnc_resolveEntity;
-        if (isNull _entity) then {
+        if ([_entity] call _isMissingEntity) then {
             _ok = false;
             _error = [_entityId] call _entityMissing;
         } else {
@@ -92,6 +118,9 @@ switch (_action) do {
     };
     case "assets.search_classes": {
         _result = [_params] call AMCP_fnc_searchClasses;
+    };
+    case "assets.get_class": {
+        _result = [_params] call AMCP_fnc_getClassDetails;
     };
     case "terrain.sample_area": {
         _result = [_params] call AMCP_fnc_sampleTerrainArea;
@@ -164,7 +193,7 @@ switch (_action) do {
     case "eden.set_entity_transform": {
         private _entityId = _params getOrDefault ["entityId", ""];
         private _entity = [_entityId] call AMCP_fnc_resolveEntity;
-        if (isNull _entity) then {
+        if ([_entity] call _isMissingEntity) then {
             _ok = false;
             _error = [_entityId] call _entityMissing;
         } else {
@@ -184,7 +213,7 @@ switch (_action) do {
     case "eden.set_entity_attributes": {
         private _entityId = _params getOrDefault ["entityId", ""];
         private _entity = [_entityId] call AMCP_fnc_resolveEntity;
-        if (isNull _entity) then {
+        if ([_entity] call _isMissingEntity) then {
             _ok = false;
             _error = [_entityId] call _entityMissing;
         } else {
@@ -210,7 +239,7 @@ switch (_action) do {
     case "eden.append_init": {
         private _entityId = _params getOrDefault ["entityId", ""];
         private _entity = [_entityId] call AMCP_fnc_resolveEntity;
-        if (isNull _entity) then {
+        if ([_entity] call _isMissingEntity) then {
             _ok = false;
             _error = [_entityId] call _entityMissing;
         } else {
@@ -237,7 +266,7 @@ switch (_action) do {
             private _entities = [];
             {
                 private _entity = [_x] call AMCP_fnc_resolveEntity;
-                if (isNull _entity) then {
+                if ([_entity] call _isMissingEntity) then {
                     _missing pushBack _x;
                 } else {
                     _entities pushBack _entity;
@@ -262,7 +291,7 @@ switch (_action) do {
         private _missing = [];
         {
             private _entity = [_x] call AMCP_fnc_resolveEntity;
-            if (isNull _entity) then {
+            if ([_entity] call _isMissingEntity) then {
                 _missing pushBack _x;
             } else {
                 _entities pushBack _entity;
@@ -291,7 +320,7 @@ switch (_action) do {
         private _missing = [];
         {
             private _entity = [_x] call AMCP_fnc_resolveEntity;
-            if (isNull _entity) then {
+            if ([_entity] call _isMissingEntity) then {
                 _missing pushBack _x;
             } else {
                 _entities pushBack _entity;
@@ -317,6 +346,36 @@ switch (_action) do {
     };
     case "eden.apply_composition": {
         _result = [_params] call AMCP_fnc_applyComposition;
+    };
+    case "eden.get_connections": {
+        _result = ["get", _params] call AMCP_fnc_connectionOps;
+    };
+    case "eden.get_synced": {
+        _result = ["getSynced", _params] call AMCP_fnc_connectionOps;
+    };
+    case "eden.sync_entities": {
+        _result = ["sync", _params] call AMCP_fnc_connectionOps;
+    };
+    case "eden.unsync_entities": {
+        _result = ["unsync", _params] call AMCP_fnc_connectionOps;
+    };
+    case "eden.list_layers": {
+        _result = ["list", _params] call AMCP_fnc_layerOps;
+    };
+    case "eden.create_layer": {
+        _result = ["create", _params] call AMCP_fnc_layerOps;
+    };
+    case "eden.assign_layer": {
+        _result = ["assign", _params] call AMCP_fnc_layerOps;
+    };
+    case "eden.remove_from_layer": {
+        _result = ["remove", _params] call AMCP_fnc_layerOps;
+    };
+    case "eden.set_layer_attributes": {
+        _result = ["setAttributes", _params] call AMCP_fnc_layerOps;
+    };
+    case "eden.delete_layer": {
+        _result = ["delete", _params] call AMCP_fnc_layerOps;
     };
     default {
         _ok = false;
