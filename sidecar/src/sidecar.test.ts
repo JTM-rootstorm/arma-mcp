@@ -891,6 +891,18 @@ describe("managed MCP discovery fallback", () => {
       "arma.eden.create_trigger",
       "arma.eden.create_entity",
       "arma.eden.delete_marker",
+      "arma.eden.create_group",
+      "arma.eden.create_unit",
+      "arma.eden.list_group_units",
+      "arma.eden.assign_unit_to_group",
+      "arma.eden.create_waypoint",
+      "arma.eden.set_group_attributes",
+      "arma.eden.set_waypoint_attributes",
+      "arma.eden.reorder_waypoints",
+      "arma.eden.attach_waypoint_to_group",
+      "arma.eden.delete_waypoint",
+      "arma.eden.get_group_links",
+      "arma.eden.get_waypoint_links",
       "arma.eden.exportSelection",
       "arma.eden.find_entities",
       "arma.eden.getObject",
@@ -1077,7 +1089,13 @@ describe("synthetic Eden action inventory", () => {
       "assign_layer",
       "remove_from_layer",
       "sync_entities",
-      "unsync_entities"
+      "unsync_entities",
+      "create_group",
+      "create_unit",
+      "assign_unit_to_group",
+      "set_waypoint_attributes",
+      "reorder_waypoints",
+      "delete_waypoint"
     ];
 
     const missing = requiredOps
@@ -1163,6 +1181,35 @@ describe("synthetic Eden action inventory", () => {
     expect(mcpServer).toContain('"eden.create_entity"');
     expect(mcpServer).toContain('"eden.set_entity_attributes"');
     expect(mcpServer).not.toContain("raw.eval");
+  });
+
+  it("keeps group/unit/waypoint relationships routed through structured helpers", () => {
+    const mcpServer = sqf("sidecar/src/mcpServer.ts");
+    const dispatcher = sqf("addons/main/functions/fn_dispatchAction.sqf");
+    const helper = sqf("addons/main/functions/fn_groupWaypointOps.sqf");
+    const capabilities = sqf("addons/main/functions/fn_getCapabilities.sqf");
+    const config = sqf("addons/main/config.cpp");
+
+    for (const [toolName, action, operation] of [
+      ["arma.eden.create_group", "eden.create_group", "createGroup"],
+      ["arma.eden.create_unit", "eden.create_unit", "createUnit"],
+      ["arma.eden.assign_unit_to_group", "eden.assign_unit_to_group", "assignUnit"],
+      ["arma.eden.create_waypoint", "eden.create_waypoint", "createWaypoint"],
+      ["arma.eden.reorder_waypoints", "eden.reorder_waypoints", "reorderWaypoints"],
+      ["arma.eden.get_group_links", "eden.get_group_links", "getGroupLinks"],
+      ["arma.eden.get_waypoint_links", "eden.get_waypoint_links", "getWaypointLinks"]
+    ]) {
+      expect(mcpServer).toContain(`"${toolName}"`);
+      expect(mcpServer).toContain(`case "${toolName}"`);
+      expect(dispatcher).toContain(`case "${action}"`);
+      expect(capabilities).toContain(`"${action}"`);
+      expect(helper).toContain(`case "${operation}"`);
+    }
+    expect(config).toContain("class groupWaypointOps");
+    expect(helper).toContain('create3DENEntity ["Waypoint"');
+    expect(helper).toContain("joinSilent");
+    expect(dispatcher).toContain('if ((_entityId find "eden:group:") isEqualTo 0)');
+    expect(dispatcher).toContain('if ((_entityId find "eden:waypoint:") isEqualTo 0)');
   });
 });
 

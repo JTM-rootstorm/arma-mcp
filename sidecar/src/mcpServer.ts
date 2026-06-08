@@ -130,6 +130,18 @@ export const MCP_DISCOVERY_FALLBACK_TOOL_NAMES = [
   "arma.eden.remove_from_layer",
   "arma.eden.set_layer_attributes",
   "arma.eden.delete_layer",
+  "arma.eden.create_group",
+  "arma.eden.create_unit",
+  "arma.eden.list_group_units",
+  "arma.eden.assign_unit_to_group",
+  "arma.eden.create_waypoint",
+  "arma.eden.set_group_attributes",
+  "arma.eden.set_waypoint_attributes",
+  "arma.eden.reorder_waypoints",
+  "arma.eden.attach_waypoint_to_group",
+  "arma.eden.delete_waypoint",
+  "arma.eden.get_group_links",
+  "arma.eden.get_waypoint_links",
   "arma.eden.sync_entities",
   "arma.eden.unsync_entities",
   "arma.eden.set_marker_text",
@@ -601,6 +613,60 @@ const deleteLayerToolSchema = writeBaseSchema.extend({
   layer: layerRefSchema,
   deleteEntities: z.boolean().default(false)
 });
+const groupSideSchema = z.enum(["WEST", "EAST", "INDEPENDENT", "CIVILIAN", "BLUFOR", "OPFOR", "GUER", "CIV"]);
+const createGroupToolSchema = writeBaseSchema.extend({
+  side: groupSideSchema.default("WEST"),
+  leaderClassName: z.string().trim().min(1).max(160).optional(),
+  callsign: z.string().trim().min(1).max(80).optional(),
+  transform: transformSchema.default({}),
+  attributes: z.record(z.string(), z.unknown()).optional(),
+  groupAttributes: z.record(z.string(), z.unknown()).optional()
+});
+const createUnitToolSchema = writeBaseSchema.extend({
+  className: z.string().trim().min(1).max(160),
+  groupId: entityIdSchema.optional(),
+  transform: transformSchema.default({}),
+  attributes: z.record(z.string(), z.unknown()).optional(),
+  select: z.boolean().default(true)
+});
+const groupRefToolSchema = z.object({
+  groupId: entityIdSchema.optional()
+});
+const assignUnitToGroupToolSchema = writeBaseSchema.extend({
+  unitId: entityIdSchema,
+  groupId: entityIdSchema
+});
+const createWaypointToolSchema = writeBaseSchema.extend({
+  groupId: entityIdSchema,
+  className: z.string().trim().min(1).max(80).default("MOVE"),
+  transform: transformSchema.default({}),
+  attributes: z.record(z.string(), z.unknown()).optional()
+});
+const groupAttributesToolSchema = writeBaseSchema.extend({
+  groupId: entityIdSchema.optional(),
+  entityId: entityIdSchema.optional(),
+  attributes: z.record(z.string(), z.unknown())
+});
+const waypointAttributesToolSchema = writeBaseSchema.extend({
+  waypointId: entityIdSchema.optional(),
+  entityId: entityIdSchema.optional(),
+  attributes: z.record(z.string(), z.unknown())
+});
+const reorderWaypointsToolSchema = writeBaseSchema.extend({
+  groupId: entityIdSchema,
+  orderedWaypointIds: z.array(entityIdSchema).min(1).max(50)
+});
+const attachWaypointToolSchema = writeBaseSchema.extend({
+  waypointId: entityIdSchema,
+  groupId: entityIdSchema
+});
+const deleteWaypointToolSchema = writeBaseSchema.extend({
+  waypointId: entityIdSchema.optional(),
+  entityId: entityIdSchema.optional()
+});
+const waypointRefToolSchema = z.object({
+  waypointId: entityIdSchema.optional()
+});
 const batchOperationSchema = z
   .object({
     op: z.enum([
@@ -617,14 +683,26 @@ const batchOperationSchema = z
       "create_marker",
       "create_trigger",
       "create_waypoint",
-      "create_module"
+      "create_module",
+      "create_group",
+      "create_unit",
+      "assign_unit_to_group",
+      "set_waypoint_attributes",
+      "reorder_waypoints",
+      "delete_waypoint"
     ]),
     clientRef: z.string().min(1).max(120).optional(),
     entityId: entityIdSchema.optional(),
     entityIds: z.array(entityIdSchema).max(100).optional(),
+    unitId: entityIdSchema.optional(),
+    groupId: entityIdSchema.optional(),
+    waypointId: entityIdSchema.optional(),
+    orderedWaypointIds: z.array(entityIdSchema).max(50).optional(),
     targetEntityId: entityIdSchema.optional(),
     connectionType: z.string().trim().min(1).max(80).optional(),
     type: entityTypeSchema.optional(),
+    side: groupSideSchema.optional(),
+    leaderClassName: z.string().trim().min(1).max(160).optional(),
     name: z.string().trim().min(1).max(160).optional(),
     className: z.string().trim().min(1).max(160).optional(),
     transform: transformSchema.optional(),
@@ -1143,6 +1221,98 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig,
     "destructive",
     deleteLayerToolSchema,
     "Delete Eden Layer"
+  );
+  registerActionTool(server, state, "arma.eden.create_group", "eden.create_group", "write", createGroupToolSchema, "Create Eden Group");
+  registerActionTool(server, state, "arma.eden.create_unit", "eden.create_unit", "write", createUnitToolSchema, "Create Eden Unit");
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.list_group_units",
+    "eden.list_group_units",
+    "read",
+    groupRefToolSchema,
+    "List Group Units"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.assign_unit_to_group",
+    "eden.assign_unit_to_group",
+    "write",
+    assignUnitToGroupToolSchema,
+    "Assign Unit To Group"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.create_waypoint",
+    "eden.create_waypoint",
+    "write",
+    createWaypointToolSchema,
+    "Create Eden Waypoint"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.set_group_attributes",
+    "eden.set_group_attributes",
+    "write",
+    groupAttributesToolSchema,
+    "Set Group Attributes"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.set_waypoint_attributes",
+    "eden.set_waypoint_attributes",
+    "write",
+    waypointAttributesToolSchema,
+    "Set Waypoint Attributes"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.reorder_waypoints",
+    "eden.reorder_waypoints",
+    "write",
+    reorderWaypointsToolSchema,
+    "Reorder Waypoints"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.attach_waypoint_to_group",
+    "eden.attach_waypoint_to_group",
+    "write",
+    attachWaypointToolSchema,
+    "Attach Waypoint To Group"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.delete_waypoint",
+    "eden.delete_waypoint",
+    "destructive",
+    deleteWaypointToolSchema,
+    "Delete Waypoint"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.get_group_links",
+    "eden.get_group_links",
+    "read",
+    groupRefToolSchema,
+    "Get Group Links"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.eden.get_waypoint_links",
+    "eden.get_waypoint_links",
+    "read",
+    waypointRefToolSchema,
+    "Get Waypoint Links"
   );
   registerDedicatedAuthoringTools(server, state);
   registerLocalGeneratorTool(server, "arma.eden.generate_road_checkpoint", roadCheckpointGeneratorSchema, (input) =>
@@ -3428,6 +3598,30 @@ async function callManagedDiscoveryFallbackTool(
       return executeActionTool(state, "eden.set_layer_attributes", "write", setLayerAttributesToolSchema, input);
     case "arma.eden.delete_layer":
       return executeActionTool(state, "eden.delete_layer", "destructive", deleteLayerToolSchema, input);
+    case "arma.eden.create_group":
+      return executeActionTool(state, "eden.create_group", "write", createGroupToolSchema, input);
+    case "arma.eden.create_unit":
+      return executeActionTool(state, "eden.create_unit", "write", createUnitToolSchema, input);
+    case "arma.eden.list_group_units":
+      return executeActionTool(state, "eden.list_group_units", "read", groupRefToolSchema, input);
+    case "arma.eden.assign_unit_to_group":
+      return executeActionTool(state, "eden.assign_unit_to_group", "write", assignUnitToGroupToolSchema, input);
+    case "arma.eden.create_waypoint":
+      return executeActionTool(state, "eden.create_waypoint", "write", createWaypointToolSchema, input);
+    case "arma.eden.set_group_attributes":
+      return executeActionTool(state, "eden.set_group_attributes", "write", groupAttributesToolSchema, input);
+    case "arma.eden.set_waypoint_attributes":
+      return executeActionTool(state, "eden.set_waypoint_attributes", "write", waypointAttributesToolSchema, input);
+    case "arma.eden.reorder_waypoints":
+      return executeActionTool(state, "eden.reorder_waypoints", "write", reorderWaypointsToolSchema, input);
+    case "arma.eden.attach_waypoint_to_group":
+      return executeActionTool(state, "eden.attach_waypoint_to_group", "write", attachWaypointToolSchema, input);
+    case "arma.eden.delete_waypoint":
+      return executeActionTool(state, "eden.delete_waypoint", "destructive", deleteWaypointToolSchema, input);
+    case "arma.eden.get_group_links":
+      return executeActionTool(state, "eden.get_group_links", "read", groupRefToolSchema, input);
+    case "arma.eden.get_waypoint_links":
+      return executeActionTool(state, "eden.get_waypoint_links", "read", waypointRefToolSchema, input);
     case "arma.eden.set_entity_transform":
       return executeActionTool(state, "eden.set_entity_transform", "write", setEntityTransformToolSchema, input);
     case "arma.eden.sync_entities":

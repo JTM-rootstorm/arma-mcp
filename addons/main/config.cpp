@@ -33,6 +33,7 @@ class CfgFunctions {
             class edenListEntities {};
             class getCapabilities {};
             class getClassDetails {};
+            class groupWaypointOps {};
             class layerOps {};
             class log {};
             class measureClass {};

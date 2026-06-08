@@ -107,6 +107,7 @@ Generators return dry-run `arma.eden.batch` plans and do not mutate Eden directl
 - Mixed composition capture/apply preserves copied local sync links by `clientRef`.
 - Marker top-level batch fields such as `text`, `markerType`, `color`, `shape`, `size`, and `alpha` are normalized into Eden marker attributes before apply.
 - Dedicated marker, trigger, and module authoring tools are MCP wrappers over typed create/read/write/sync actions. They do not expose raw SQF.
+- Group/unit/waypoint tools use structured relationship actions. Unit and waypoint creation with an existing group uses Eden's group-aware create path; waypoint reorder/reattach recreates waypoints and reports replacement IDs.
 - Spatial tools provide structured terrain summaries, flat-area candidates, nearest-road metadata, broad collision warnings, placement scores, LOS checks, cover candidates, and LZ candidates. They are intended to guide dry-run plan review and need live map smoke tests before relying on exact scores.
 
 ## Unsupported Or Best Effort

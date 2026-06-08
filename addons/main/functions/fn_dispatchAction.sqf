@@ -77,6 +77,9 @@ switch (_action) do {
             if ((_entityId find "eden:marker:") isEqualTo 0) then {_entityType = "Marker"};
             if ((_entityId find "eden:trigger:") isEqualTo 0) then {_entityType = "Trigger"};
             if ((_entityId find "eden:logic:") isEqualTo 0) then {_entityType = "Logic"};
+            if ((_entityId find "eden:group:") isEqualTo 0) then {_entityType = "Group"};
+            if ((_entityId find "eden:waypoint:") isEqualTo 0) then {_entityType = "Waypoint"};
+            if ((_entityId find "eden:layer:") isEqualTo 0) then {_entityType = "Layer"};
             _result = createHashMapFromArray [
                 ["snapshot", [_entity, _entityType, _params] call AMCP_fnc_buildEntitySnapshot]
             ];
@@ -113,7 +116,14 @@ switch (_action) do {
             _ok = false;
             _error = [_entityId] call _entityMissing;
         } else {
-            _result = [_entity, "Object", _params getOrDefault ["attributeNames", []]] call AMCP_fnc_readEntityAttributes;
+            private _entityType = "Object";
+            if ((_entityId find "eden:marker:") isEqualTo 0) then {_entityType = "Marker"};
+            if ((_entityId find "eden:trigger:") isEqualTo 0) then {_entityType = "Trigger"};
+            if ((_entityId find "eden:logic:") isEqualTo 0) then {_entityType = "Logic"};
+            if ((_entityId find "eden:group:") isEqualTo 0) then {_entityType = "Group"};
+            if ((_entityId find "eden:waypoint:") isEqualTo 0) then {_entityType = "Waypoint"};
+            if ((_entityId find "eden:layer:") isEqualTo 0) then {_entityType = "Layer"};
+            _result = [_entity, _entityType, _params getOrDefault ["attributeNames", []]] call AMCP_fnc_readEntityAttributes;
         };
     };
     case "assets.search_classes": {
@@ -397,6 +407,65 @@ switch (_action) do {
     };
     case "eden.delete_layer": {
         _result = ["delete", _params] call AMCP_fnc_layerOps;
+    };
+    case "eden.create_group": {
+        _result = ["createGroup", _params] call AMCP_fnc_groupWaypointOps;
+    };
+    case "eden.create_unit": {
+        _result = ["createUnit", _params] call AMCP_fnc_groupWaypointOps;
+    };
+    case "eden.list_group_units": {
+        _result = ["listGroupUnits", _params] call AMCP_fnc_groupWaypointOps;
+    };
+    case "eden.assign_unit_to_group": {
+        _result = ["assignUnit", _params] call AMCP_fnc_groupWaypointOps;
+    };
+    case "eden.create_waypoint": {
+        _result = ["createWaypoint", _params] call AMCP_fnc_groupWaypointOps;
+    };
+    case "eden.set_group_attributes": {
+        private _groupId = _params getOrDefault ["groupId", _params getOrDefault ["entityId", ""]];
+        private _group = [_groupId] call AMCP_fnc_resolveEntity;
+        if (!(_group isEqualType grpNull)) then {
+            _ok = false;
+            _error = [_groupId] call _entityMissing;
+        } else {
+            private _attributeResult = createHashMapFromArray [
+                ["previous", createHashMap],
+                ["updatedAttributes", keys (_params getOrDefault ["attributes", createHashMap])],
+                ["warnings", []]
+            ];
+            if (!(_params getOrDefault ["dryRun", true])) then {
+                collect3DENHistory {
+                    _attributeResult = [_group, _params getOrDefault ["attributes", createHashMap]] call AMCP_fnc_applyAttributes;
+                };
+            };
+            _result = createHashMapFromArray [
+                ["dryRun", _params getOrDefault ["dryRun", true]],
+                ["updated", [_groupId]],
+                ["previous", _attributeResult getOrDefault ["previous", createHashMap]],
+                ["updatedAttributes", _attributeResult getOrDefault ["updatedAttributes", []]],
+                ["warnings", _attributeResult getOrDefault ["warnings", []]]
+            ];
+        };
+    };
+    case "eden.set_waypoint_attributes": {
+        _result = ["setWaypointAttributes", _params] call AMCP_fnc_groupWaypointOps;
+    };
+    case "eden.reorder_waypoints": {
+        _result = ["reorderWaypoints", _params] call AMCP_fnc_groupWaypointOps;
+    };
+    case "eden.attach_waypoint_to_group": {
+        _result = ["attachWaypoint", _params] call AMCP_fnc_groupWaypointOps;
+    };
+    case "eden.delete_waypoint": {
+        _result = ["deleteWaypoint", _params] call AMCP_fnc_groupWaypointOps;
+    };
+    case "eden.get_group_links": {
+        _result = ["getGroupLinks", _params] call AMCP_fnc_groupWaypointOps;
+    };
+    case "eden.get_waypoint_links": {
+        _result = ["getWaypointLinks", _params] call AMCP_fnc_groupWaypointOps;
     };
     default {
         _ok = false;

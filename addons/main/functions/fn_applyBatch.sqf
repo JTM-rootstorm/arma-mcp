@@ -41,7 +41,7 @@ private _isMissingEntity = {
 collect3DENHistory {
     {
         private _op = _x getOrDefault ["op", ""];
-        if (_op in ["create_entity", "create_marker", "create_trigger", "create_waypoint", "create_module"]) then {
+        if (_op in ["create_entity", "create_marker", "create_trigger", "create_module"]) then {
                 private _entityType = _x getOrDefault ["type", "Object"];
                 if (_op isEqualTo "create_marker") then {_entityType = "Marker"};
                 if (_op isEqualTo "create_trigger") then {_entityType = "Trigger"};
@@ -55,6 +55,21 @@ collect3DENHistory {
                     _x set ["clientRef", _createParams getOrDefault ["clientRef", ""]];
                     _created pushBack _x;
                 } forEach (_createResult getOrDefault ["created", []]);
+        } else {
+            if (_op in ["create_group", "create_unit", "create_waypoint"]) then {
+                private _relationshipParams = +_x;
+                _relationshipParams set ["dryRun", false];
+                private _relationshipOperation = switch (_op) do {
+                    case "create_group": {"createGroup"};
+                    case "create_unit": {"createUnit"};
+                    default {"createWaypoint"};
+                };
+                private _relationshipResult = [_relationshipOperation, _relationshipParams] call AMCP_fnc_groupWaypointOps;
+                {
+                    _x set ["clientRef", _relationshipParams getOrDefault ["clientRef", ""]];
+                    _created pushBack _x;
+                } forEach (_relationshipResult getOrDefault ["created", []]);
+                _warnings append (_relationshipResult getOrDefault ["warnings", []]);
         } else {
             if (_op isEqualTo "create_layer") then {
                 private _layerParams = +_x;
@@ -151,10 +166,40 @@ collect3DENHistory {
                 } forEach (_connectionResult getOrDefault ["updated", []]);
                 _warnings append (_connectionResult getOrDefault ["warnings", []]);
             };
+            case "assign_unit_to_group": {
+                private _relationshipParams = +_x;
+                _relationshipParams set ["dryRun", false];
+                private _relationshipResult = ["assignUnit", _relationshipParams] call AMCP_fnc_groupWaypointOps;
+                _updated append (_relationshipResult getOrDefault ["updated", []]);
+                _warnings append (_relationshipResult getOrDefault ["warnings", []]);
+            };
+            case "set_waypoint_attributes": {
+                private _relationshipParams = +_x;
+                _relationshipParams set ["dryRun", false];
+                private _relationshipResult = ["setWaypointAttributes", _relationshipParams] call AMCP_fnc_groupWaypointOps;
+                _updated append (_relationshipResult getOrDefault ["updated", []]);
+                _warnings append (_relationshipResult getOrDefault ["warnings", []]);
+            };
+            case "reorder_waypoints": {
+                private _relationshipParams = +_x;
+                _relationshipParams set ["dryRun", false];
+                private _relationshipResult = ["reorderWaypoints", _relationshipParams] call AMCP_fnc_groupWaypointOps;
+                _created append (_relationshipResult getOrDefault ["created", []]);
+                _updated append (_relationshipResult getOrDefault ["updated", []]);
+                _warnings append (_relationshipResult getOrDefault ["warnings", []]);
+            };
+            case "delete_waypoint": {
+                private _relationshipParams = +_x;
+                _relationshipParams set ["dryRun", false];
+                private _relationshipResult = ["deleteWaypoint", _relationshipParams] call AMCP_fnc_groupWaypointOps;
+                _deleted append (_relationshipResult getOrDefault ["deleted", []]);
+                _warnings append (_relationshipResult getOrDefault ["warnings", []]);
+            };
             default {
                 _warnings pushBack format ["Skipping unsupported batch operation %1", _op];
             };
             };
+        };
         };
         };
     } forEach _operations;

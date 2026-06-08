@@ -28,7 +28,7 @@ if ((count _operations) > 250) then {
 
 {
     private _op = _x getOrDefault ["op", ""];
-    if (_op in ["create_entity", "create_marker", "create_trigger", "create_waypoint", "create_module", "create_layer"]) then {
+    if (_op in ["create_entity", "create_marker", "create_trigger", "create_waypoint", "create_module", "create_layer", "create_group", "create_unit"]) then {
         _stats set ["create", (_stats get "create") + 1];
         private _className = _x getOrDefault ["className", ""];
         private _type = _x getOrDefault ["type", "Object"];
@@ -40,6 +40,9 @@ if ((count _operations) > 250) then {
                 ];
             };
         } else {
+            if (_op isEqualTo "create_group") then {
+                _className = _x getOrDefault ["leaderClassName", _x getOrDefault ["className", "B_Soldier_F"]];
+            };
             if (_className isEqualTo "") then {
             _errors pushBack createHashMapFromArray [
                 ["code", "MISSING_CLASS"],
@@ -51,7 +54,7 @@ if ((count _operations) > 250) then {
             };
         };
     } else {
-        if (_op in ["set_transform", "set_attributes", "assign_layer", "remove_from_layer", "sync_entities", "unsync_entities"]) then {
+        if (_op in ["set_transform", "set_attributes", "assign_layer", "remove_from_layer", "sync_entities", "unsync_entities", "assign_unit_to_group", "set_waypoint_attributes", "reorder_waypoints"]) then {
             _stats set ["update", (_stats get "update") + 1];
             private _entityId = _x getOrDefault ["entityId", ""];
             if (_entityId isNotEqualTo "" && {[([_entityId] call AMCP_fnc_resolveEntity)] call _isMissingEntity}) then {
@@ -76,13 +79,25 @@ if ((count _operations) > 250) then {
                     ["message", format ["Operation %1 is missing targetEntityId", _forEachIndex]]
                 ];
             };
+            if (_op isEqualTo "assign_unit_to_group" && {((_x getOrDefault ["unitId", ""]) isEqualTo "" || {(_x getOrDefault ["groupId", ""]) isEqualTo ""})}) then {
+                _errors pushBack createHashMapFromArray [
+                    ["code", "MISSING_GROUP_LINK"],
+                    ["message", format ["Operation %1 is missing unitId or groupId", _forEachIndex]]
+                ];
+            };
+            if (_op in ["set_waypoint_attributes", "reorder_waypoints"] && {((_x getOrDefault ["waypointId", ""]) isEqualTo "" && {count (_x getOrDefault ["orderedWaypointIds", []]) isEqualTo 0})}) then {
+                _errors pushBack createHashMapFromArray [
+                    ["code", "MISSING_WAYPOINT"],
+                    ["message", format ["Operation %1 is missing waypoint reference", _forEachIndex]]
+                ];
+            };
         } else {
-            if (_op isEqualTo "delete_entity") then {
+            if (_op in ["delete_entity", "delete_waypoint"]) then {
                 _stats set ["delete", (_stats get "delete") + 1];
                 if (!_dryRun && {!_confirmed}) then {
                     _errors pushBack createHashMapFromArray [
                         ["code", "CONFIRMATION_REQUIRED"],
-                        ["message", "delete_entity requires confirmation when dryRun=false"]
+                        ["message", format ["%1 requires confirmation when dryRun=false", _op]]
                     ];
                 };
             } else {
