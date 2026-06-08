@@ -38,10 +38,16 @@ Entity IDs are session-local bridge IDs. They are refreshed as entities are read
 ## Write Tools
 
 - `arma.eden.create_entity`
+- `arma.eden.create_object`
+- `arma.eden.create_logic`
+- `arma.eden.create_module`
+- `arma.eden.create_marker`
+- `arma.eden.create_trigger`
 - `arma.eden.set_entity_transform`
 - `arma.eden.set_entity_attributes`
 - `arma.eden.append_init`
 - `arma.eden.delete_entities`
+- `arma.eden.delete_marker`
 - `arma.eden.set_selection`
 - `arma.eden.clear_selection`
 - `arma.eden.focus_entities`
@@ -54,6 +60,19 @@ Entity IDs are session-local bridge IDs. They are refreshed as entities are read
 - `arma.eden.remove_from_layer`
 - `arma.eden.set_layer_attributes`
 - `arma.eden.delete_layer`
+- `arma.eden.set_marker_text`
+- `arma.eden.set_marker_type`
+- `arma.eden.set_marker_color`
+- `arma.eden.set_marker_shape`
+- `arma.eden.set_marker_size`
+- `arma.eden.set_marker_alpha`
+- `arma.eden.set_trigger_area`
+- `arma.eden.set_trigger_activation`
+- `arma.eden.set_trigger_statements`
+- `arma.eden.set_trigger_repeatable`
+- `arma.eden.read_module_args`
+- `arma.eden.set_module_args`
+- `arma.eden.sync_module`
 
 Write tools default to dry-run where mutation is possible. Destructive operations require:
 
@@ -87,6 +106,7 @@ Generators return dry-run `arma.eden.batch` plans and do not mutate Eden directl
 - Sync tools use Eden `Sync` connections by default and can read/add/remove other 3DEN connection classes when supplied.
 - Mixed composition capture/apply preserves copied local sync links by `clientRef`.
 - Marker top-level batch fields such as `text`, `markerType`, `color`, `shape`, `size`, and `alpha` are normalized into Eden marker attributes before apply.
+- Dedicated marker, trigger, and module authoring tools are MCP wrappers over typed create/read/write/sync actions. They do not expose raw SQF.
 - Spatial tools provide structured terrain summaries, flat-area candidates, nearest-road metadata, broad collision warnings, placement scores, LOS checks, cover candidates, and LZ candidates. They are intended to guide dry-run plan review and need live map smoke tests before relying on exact scores.
 
 ## Unsupported Or Best Effort

@@ -112,7 +112,13 @@ export const MCP_DISCOVERY_FALLBACK_TOOL_NAMES = [
   "arma.eden.capture_composition",
   "arma.eden.exportSelection",
   "arma.eden.batch",
+  "arma.eden.create_object",
+  "arma.eden.create_logic",
+  "arma.eden.create_module",
+  "arma.eden.create_marker",
+  "arma.eden.create_trigger",
   "arma.eden.create_entity",
+  "arma.eden.delete_marker",
   "arma.eden.find_entities",
   "arma.eden.getObject",
   "arma.eden.get_connections",
@@ -126,6 +132,19 @@ export const MCP_DISCOVERY_FALLBACK_TOOL_NAMES = [
   "arma.eden.delete_layer",
   "arma.eden.sync_entities",
   "arma.eden.unsync_entities",
+  "arma.eden.set_marker_text",
+  "arma.eden.set_marker_type",
+  "arma.eden.set_marker_color",
+  "arma.eden.set_marker_shape",
+  "arma.eden.set_marker_size",
+  "arma.eden.set_marker_alpha",
+  "arma.eden.set_trigger_area",
+  "arma.eden.set_trigger_activation",
+  "arma.eden.set_trigger_statements",
+  "arma.eden.set_trigger_repeatable",
+  "arma.eden.read_module_args",
+  "arma.eden.set_module_args",
+  "arma.eden.sync_module",
   "arma.eden.generate_aa_site",
   "arma.eden.generate_cover_line",
   "arma.eden.generate_lz",
@@ -455,6 +474,42 @@ const createEntityToolSchema = writeBaseSchema.extend({
   select: z.boolean().default(true),
   layer: z.string().trim().min(1).max(160).optional()
 });
+const createTypedEntityToolSchema = writeBaseSchema.extend({
+  className: z.string().trim().min(1).max(160),
+  transform: transformSchema.default({}),
+  attributes: z.record(z.string(), z.unknown()).optional(),
+  select: z.boolean().default(true),
+  layer: z.string().trim().min(1).max(160).optional()
+});
+const createMarkerToolSchema = writeBaseSchema.extend({
+  markerType: z.string().trim().min(1).max(160).default("mil_dot"),
+  transform: transformSchema.default({}),
+  text: z.string().max(500).optional(),
+  color: z.string().trim().min(1).max(80).optional(),
+  shape: z.string().trim().min(1).max(80).optional(),
+  size: z.union([z.number(), z.tuple([z.number(), z.number()])]).optional(),
+  alpha: z.number().min(0).max(1).optional(),
+  attributes: z.record(z.string(), z.unknown()).optional(),
+  select: z.boolean().default(true),
+  layer: z.string().trim().min(1).max(160).optional()
+});
+const createTriggerToolSchema = writeBaseSchema.extend({
+  className: z.string().trim().min(1).max(160).default("EmptyDetector"),
+  transform: transformSchema.default({}),
+  sizeA: z.number().positive().max(10_000).optional(),
+  sizeB: z.number().positive().max(10_000).optional(),
+  angle: z.number().optional(),
+  isRectangle: z.boolean().optional(),
+  activationBy: z.string().trim().min(1).max(80).optional(),
+  activationType: z.string().trim().min(1).max(80).optional(),
+  repeatable: z.boolean().optional(),
+  condition: z.string().max(16_000).optional(),
+  onActivation: z.string().max(16_000).optional(),
+  onDeactivation: z.string().max(16_000).optional(),
+  attributes: z.record(z.string(), z.unknown()).optional(),
+  select: z.boolean().default(true),
+  layer: z.string().trim().min(1).max(160).optional()
+});
 const setEntityTransformToolSchema = writeBaseSchema.extend({
   entityId: entityIdSchema,
   transform: transformSchema
@@ -478,6 +533,38 @@ const selectionToolSchema = z.object({
 });
 const focusEntitiesToolSchema = z.object({
   entityIds: z.array(entityIdSchema).min(1).max(20)
+});
+const markerTextToolSchema = writeBaseSchema.extend({ entityId: entityIdSchema, text: z.string().max(500) });
+const markerStringValueToolSchema = writeBaseSchema.extend({ entityId: entityIdSchema, value: z.string().trim().min(1).max(160) });
+const markerSizeToolSchema = writeBaseSchema.extend({
+  entityId: entityIdSchema,
+  size: z.union([z.number(), z.tuple([z.number(), z.number()])])
+});
+const markerAlphaToolSchema = writeBaseSchema.extend({ entityId: entityIdSchema, alpha: z.number().min(0).max(1) });
+const deleteMarkerToolSchema = writeBaseSchema.extend({ entityId: entityIdSchema });
+const triggerAreaToolSchema = writeBaseSchema.extend({
+  entityId: entityIdSchema,
+  sizeA: z.number().positive().max(10_000),
+  sizeB: z.number().positive().max(10_000),
+  angle: z.number().default(0),
+  isRectangle: z.boolean().default(false)
+});
+const triggerActivationToolSchema = writeBaseSchema.extend({
+  entityId: entityIdSchema,
+  activationBy: z.string().trim().min(1).max(80),
+  activationType: z.string().trim().min(1).max(80),
+  repeatable: z.boolean().optional()
+});
+const triggerStatementsToolSchema = writeBaseSchema.extend({
+  entityId: entityIdSchema,
+  condition: z.string().max(16_000).optional(),
+  onActivation: z.string().max(16_000).optional(),
+  onDeactivation: z.string().max(16_000).optional()
+});
+const triggerRepeatableToolSchema = writeBaseSchema.extend({ entityId: entityIdSchema, repeatable: z.boolean() });
+const moduleArgsToolSchema = writeBaseSchema.extend({
+  entityId: entityIdSchema,
+  args: z.record(z.string(), z.unknown())
 });
 const connectionToolSchema = z.object({
   entityIds: z.array(entityIdSchema).min(1).max(100).optional(),
@@ -1057,6 +1144,7 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig,
     deleteLayerToolSchema,
     "Delete Eden Layer"
   );
+  registerDedicatedAuthoringTools(server, state);
   registerLocalGeneratorTool(server, "arma.eden.generate_road_checkpoint", roadCheckpointGeneratorSchema, (input) =>
     generateRoadCheckpoint(input)
   );
@@ -1408,6 +1496,222 @@ function registerCatalogTools(server: McpServer, state: ArmaMcpState): void {
     },
     async () => withCatalogDb((catalogDb) => jsonToolResult({ categories: listCatalogCategories(catalogDb) }))
   );
+}
+
+function registerDedicatedAuthoringTools(server: McpServer, state: ArmaMcpState): void {
+  const createTyped = (toolName: string, title: string, type: "Object" | "Logic" | "Module") => {
+    server.registerTool(
+      toolName,
+      {
+        title,
+        description: `Create a typed Eden ${type} entity through eden.create_entity.`,
+        inputSchema: createTypedEntityToolSchema.shape
+      },
+      async (input) => {
+        const parsed = createTypedEntityToolSchema.parse(input);
+        return jsonToolResult(await executeActionTool(state, "eden.create_entity", "write", createEntityToolSchema, { ...parsed, type }));
+      }
+    );
+  };
+
+  createTyped("arma.eden.create_object", "Create Eden Object", "Object");
+  createTyped("arma.eden.create_logic", "Create Eden Logic", "Logic");
+  createTyped("arma.eden.create_module", "Create Eden Module", "Module");
+
+  server.registerTool(
+    "arma.eden.create_marker",
+    {
+      title: "Create Eden Marker",
+      description: "Create an Eden marker with normalized marker fields.",
+      inputSchema: createMarkerToolSchema.shape
+    },
+    async (input) => {
+      const parsed = createMarkerToolSchema.parse(input);
+      const attributes = stripUndefined({
+        ...(parsed.attributes ?? {}),
+        text: parsed.text,
+        markerType: parsed.markerType,
+        color: parsed.color,
+        shape: parsed.shape,
+        size: parsed.size,
+        alpha: parsed.alpha
+      });
+      return jsonToolResult(
+        await executeActionTool(state, "eden.create_entity", "write", createEntityToolSchema, {
+          ...parsed,
+          type: "Marker",
+          className: parsed.markerType,
+          attributes
+        })
+      );
+    }
+  );
+
+  server.registerTool(
+    "arma.eden.create_trigger",
+    {
+      title: "Create Eden Trigger",
+      description: "Create an Eden trigger with area, activation, and statement attributes.",
+      inputSchema: createTriggerToolSchema.shape
+    },
+    async (input) => {
+      const parsed = createTriggerToolSchema.parse(input);
+      const attributes = stripUndefined({
+        ...(parsed.attributes ?? {}),
+        sizeA: parsed.sizeA,
+        sizeB: parsed.sizeB,
+        angle: parsed.angle,
+        isRectangle: parsed.isRectangle,
+        activationBy: parsed.activationBy,
+        activationType: parsed.activationType,
+        repeatable: parsed.repeatable,
+        condition: parsed.condition,
+        onActivation: parsed.onActivation,
+        onDeactivation: parsed.onDeactivation
+      });
+      return jsonToolResult(
+        await executeActionTool(state, "eden.create_entity", "write", createEntityToolSchema, {
+          ...parsed,
+          type: "Trigger",
+          attributes
+        })
+      );
+    }
+  );
+
+  registerSetAttributeTool(server, state, "arma.eden.set_marker_text", "Set Marker Text", markerTextToolSchema, (parsed) => ({
+    text: parsed.text
+  }));
+  registerSetAttributeTool(server, state, "arma.eden.set_marker_type", "Set Marker Type", markerStringValueToolSchema, (parsed) => ({
+    markerType: parsed.value
+  }));
+  registerSetAttributeTool(server, state, "arma.eden.set_marker_color", "Set Marker Color", markerStringValueToolSchema, (parsed) => ({
+    color: parsed.value
+  }));
+  registerSetAttributeTool(server, state, "arma.eden.set_marker_shape", "Set Marker Shape", markerStringValueToolSchema, (parsed) => ({
+    shape: parsed.value
+  }));
+  registerSetAttributeTool(server, state, "arma.eden.set_marker_size", "Set Marker Size", markerSizeToolSchema, (parsed) => ({
+    size: parsed.size
+  }));
+  registerSetAttributeTool(server, state, "arma.eden.set_marker_alpha", "Set Marker Alpha", markerAlphaToolSchema, (parsed) => ({
+    alpha: parsed.alpha
+  }));
+
+  server.registerTool(
+    "arma.eden.delete_marker",
+    {
+      title: "Delete Eden Marker",
+      description: "Delete one marker entity through eden.delete_entities.",
+      inputSchema: deleteMarkerToolSchema.shape
+    },
+    async (input) => {
+      const parsed = deleteMarkerToolSchema.parse(input);
+      return jsonToolResult(
+        await executeActionTool(state, "eden.delete_entities", "destructive", deleteEntitiesToolSchema, {
+          dryRun: parsed.dryRun,
+          confirmation: parsed.confirmation,
+          entityIds: [parsed.entityId]
+        })
+      );
+    }
+  );
+
+  registerSetAttributeTool(server, state, "arma.eden.set_trigger_area", "Set Trigger Area", triggerAreaToolSchema, (parsed) => ({
+    sizeA: parsed.sizeA,
+    sizeB: parsed.sizeB,
+    angle: parsed.angle,
+    isRectangle: parsed.isRectangle
+  }));
+  registerSetAttributeTool(server, state, "arma.eden.set_trigger_activation", "Set Trigger Activation", triggerActivationToolSchema, (parsed) =>
+    stripUndefined({
+      activationBy: parsed.activationBy,
+      activationType: parsed.activationType,
+      repeatable: parsed.repeatable
+    })
+  );
+  registerSetAttributeTool(server, state, "arma.eden.set_trigger_statements", "Set Trigger Statements", triggerStatementsToolSchema, (parsed) =>
+    stripUndefined({
+      condition: parsed.condition,
+      onActivation: parsed.onActivation,
+      onDeactivation: parsed.onDeactivation
+    })
+  );
+  registerSetAttributeTool(server, state, "arma.eden.set_trigger_repeatable", "Set Trigger Repeatable", triggerRepeatableToolSchema, (parsed) => ({
+    repeatable: parsed.repeatable
+  }));
+
+  server.registerTool(
+    "arma.eden.read_module_args",
+    {
+      title: "Read Module Args",
+      description: "Read module attributes through eden.get_entity_attributes.",
+      inputSchema: getEntityAttributesToolSchema.shape
+    },
+    async (input) => jsonToolResult(await executeActionTool(state, "eden.get_entity_attributes", "read", getEntityAttributesToolSchema, input))
+  );
+  server.registerTool(
+    "arma.eden.set_module_args",
+    {
+      title: "Set Module Args",
+      description: "Patch module attributes through eden.set_entity_attributes.",
+      inputSchema: moduleArgsToolSchema.shape
+    },
+    async (input) => {
+      const parsed = moduleArgsToolSchema.parse(input);
+      return jsonToolResult(
+        await executeActionTool(state, "eden.set_entity_attributes", "write", setEntityAttributesToolSchema, {
+          dryRun: parsed.dryRun,
+          confirmation: parsed.confirmation,
+          entityId: parsed.entityId,
+          attributes: parsed.args
+        })
+      );
+    }
+  );
+  server.registerTool(
+    "arma.eden.sync_module",
+    {
+      title: "Sync Module",
+      description: "Sync a module/entity to one target through eden.sync_entities.",
+      inputSchema: mutateConnectionToolSchema.shape
+    },
+    async (input) => jsonToolResult(await executeActionTool(state, "eden.sync_entities", "write", mutateConnectionToolSchema, input))
+  );
+}
+
+function registerSetAttributeTool<T extends z.ZodObject<z.ZodRawShape>>(
+  server: McpServer,
+  state: ArmaMcpState,
+  toolName: string,
+  title: string,
+  inputSchema: T,
+  attributes: (parsed: z.infer<T>) => Record<string, unknown>
+): void {
+  server.registerTool(
+    toolName,
+    {
+      title,
+      description: "Patch one Eden entity attribute group through eden.set_entity_attributes.",
+      inputSchema: inputSchema.shape
+    },
+    async (input) => {
+      const parsed = inputSchema.parse(input);
+      const parsedRecord = parsed as Record<string, unknown>;
+      return jsonToolResult(
+        await executeActionTool(state, "eden.set_entity_attributes", "write", setEntityAttributesToolSchema, {
+          dryRun: parsedRecord.dryRun === true,
+          confirmation: parsedRecord.confirmation,
+          entityId: String(parsedRecord.entityId),
+          attributes: attributes(parsed)
+        })
+      );
+    }
+  );
+}
+
+function stripUndefined(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
 }
 
 function registerCatalogMeasurementTools(server: McpServer, state: ArmaMcpState): void {
@@ -3020,8 +3324,59 @@ async function callManagedDiscoveryFallbackTool(
     }
     case "arma.eden.batch":
       return executeActionTool(state, "eden.batch", "write", batchToolSchema, input);
+    case "arma.eden.create_object":
+      return executeActionTool(state, "eden.create_entity", "write", createEntityToolSchema, { ...createTypedEntityToolSchema.parse(input), type: "Object" });
+    case "arma.eden.create_logic":
+      return executeActionTool(state, "eden.create_entity", "write", createEntityToolSchema, { ...createTypedEntityToolSchema.parse(input), type: "Logic" });
+    case "arma.eden.create_module":
+      return executeActionTool(state, "eden.create_entity", "write", createEntityToolSchema, { ...createTypedEntityToolSchema.parse(input), type: "Module" });
+    case "arma.eden.create_marker": {
+      const parsed = createMarkerToolSchema.parse(input);
+      return executeActionTool(state, "eden.create_entity", "write", createEntityToolSchema, {
+        ...parsed,
+        type: "Marker",
+        className: parsed.markerType,
+        attributes: stripUndefined({
+          ...(parsed.attributes ?? {}),
+          text: parsed.text,
+          markerType: parsed.markerType,
+          color: parsed.color,
+          shape: parsed.shape,
+          size: parsed.size,
+          alpha: parsed.alpha
+        })
+      });
+    }
+    case "arma.eden.create_trigger": {
+      const parsed = createTriggerToolSchema.parse(input);
+      return executeActionTool(state, "eden.create_entity", "write", createEntityToolSchema, {
+        ...parsed,
+        type: "Trigger",
+        attributes: stripUndefined({
+          ...(parsed.attributes ?? {}),
+          sizeA: parsed.sizeA,
+          sizeB: parsed.sizeB,
+          angle: parsed.angle,
+          isRectangle: parsed.isRectangle,
+          activationBy: parsed.activationBy,
+          activationType: parsed.activationType,
+          repeatable: parsed.repeatable,
+          condition: parsed.condition,
+          onActivation: parsed.onActivation,
+          onDeactivation: parsed.onDeactivation
+        })
+      });
+    }
     case "arma.eden.create_entity":
       return executeActionTool(state, "eden.create_entity", "write", createEntityToolSchema, input);
+    case "arma.eden.delete_marker": {
+      const parsed = deleteMarkerToolSchema.parse(input);
+      return executeActionTool(state, "eden.delete_entities", "destructive", deleteEntitiesToolSchema, {
+        dryRun: parsed.dryRun,
+        confirmation: parsed.confirmation,
+        entityIds: [parsed.entityId]
+      });
+    }
     case "arma.eden.find_entities":
       return executeActionTool(state, "eden.find_entities", "read", entityListToolSchema, input);
     case "arma.eden.getObject": {
@@ -3079,6 +3434,94 @@ async function callManagedDiscoveryFallbackTool(
       return executeActionTool(state, "eden.sync_entities", "write", mutateConnectionToolSchema, input);
     case "arma.eden.unsync_entities":
       return executeActionTool(state, "eden.unsync_entities", "write", mutateConnectionToolSchema, input);
+    case "arma.eden.set_marker_text": {
+      const parsed = markerTextToolSchema.parse(input);
+      return executeActionTool(state, "eden.set_entity_attributes", "write", setEntityAttributesToolSchema, {
+        dryRun: parsed.dryRun,
+        confirmation: parsed.confirmation,
+        entityId: parsed.entityId,
+        attributes: { text: parsed.text }
+      });
+    }
+    case "arma.eden.set_marker_type":
+    case "arma.eden.set_marker_color":
+    case "arma.eden.set_marker_shape": {
+      const parsed = markerStringValueToolSchema.parse(input);
+      const key = toolName.endsWith("_type") ? "markerType" : toolName.endsWith("_color") ? "color" : "shape";
+      return executeActionTool(state, "eden.set_entity_attributes", "write", setEntityAttributesToolSchema, {
+        dryRun: parsed.dryRun,
+        confirmation: parsed.confirmation,
+        entityId: parsed.entityId,
+        attributes: { [key]: parsed.value }
+      });
+    }
+    case "arma.eden.set_marker_size": {
+      const parsed = markerSizeToolSchema.parse(input);
+      return executeActionTool(state, "eden.set_entity_attributes", "write", setEntityAttributesToolSchema, {
+        dryRun: parsed.dryRun,
+        confirmation: parsed.confirmation,
+        entityId: parsed.entityId,
+        attributes: { size: parsed.size }
+      });
+    }
+    case "arma.eden.set_marker_alpha": {
+      const parsed = markerAlphaToolSchema.parse(input);
+      return executeActionTool(state, "eden.set_entity_attributes", "write", setEntityAttributesToolSchema, {
+        dryRun: parsed.dryRun,
+        confirmation: parsed.confirmation,
+        entityId: parsed.entityId,
+        attributes: { alpha: parsed.alpha }
+      });
+    }
+    case "arma.eden.set_trigger_area": {
+      const parsed = triggerAreaToolSchema.parse(input);
+      return executeActionTool(state, "eden.set_entity_attributes", "write", setEntityAttributesToolSchema, {
+        dryRun: parsed.dryRun,
+        confirmation: parsed.confirmation,
+        entityId: parsed.entityId,
+        attributes: { sizeA: parsed.sizeA, sizeB: parsed.sizeB, angle: parsed.angle, isRectangle: parsed.isRectangle }
+      });
+    }
+    case "arma.eden.set_trigger_activation": {
+      const parsed = triggerActivationToolSchema.parse(input);
+      return executeActionTool(state, "eden.set_entity_attributes", "write", setEntityAttributesToolSchema, {
+        dryRun: parsed.dryRun,
+        confirmation: parsed.confirmation,
+        entityId: parsed.entityId,
+        attributes: stripUndefined({ activationBy: parsed.activationBy, activationType: parsed.activationType, repeatable: parsed.repeatable })
+      });
+    }
+    case "arma.eden.set_trigger_statements": {
+      const parsed = triggerStatementsToolSchema.parse(input);
+      return executeActionTool(state, "eden.set_entity_attributes", "write", setEntityAttributesToolSchema, {
+        dryRun: parsed.dryRun,
+        confirmation: parsed.confirmation,
+        entityId: parsed.entityId,
+        attributes: stripUndefined({ condition: parsed.condition, onActivation: parsed.onActivation, onDeactivation: parsed.onDeactivation })
+      });
+    }
+    case "arma.eden.set_trigger_repeatable": {
+      const parsed = triggerRepeatableToolSchema.parse(input);
+      return executeActionTool(state, "eden.set_entity_attributes", "write", setEntityAttributesToolSchema, {
+        dryRun: parsed.dryRun,
+        confirmation: parsed.confirmation,
+        entityId: parsed.entityId,
+        attributes: { repeatable: parsed.repeatable }
+      });
+    }
+    case "arma.eden.read_module_args":
+      return executeActionTool(state, "eden.get_entity_attributes", "read", getEntityAttributesToolSchema, input);
+    case "arma.eden.set_module_args": {
+      const parsed = moduleArgsToolSchema.parse(input);
+      return executeActionTool(state, "eden.set_entity_attributes", "write", setEntityAttributesToolSchema, {
+        dryRun: parsed.dryRun,
+        confirmation: parsed.confirmation,
+        entityId: parsed.entityId,
+        attributes: parsed.args
+      });
+    }
+    case "arma.eden.sync_module":
+      return executeActionTool(state, "eden.sync_entities", "write", mutateConnectionToolSchema, input);
     case "arma.eden.validate_plan":
       return executeActionTool(state, "eden.validate_plan", "read", validatePlanToolSchema, input);
     case "arma.terrain.sample_area":

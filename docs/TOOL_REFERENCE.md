@@ -33,10 +33,16 @@ ArmaMCP exposes typed MCP tools. Write tools default to reviewable dry-runs wher
 ## Eden Writes
 
 - `arma.eden.create_entity`
+- `arma.eden.create_object`
+- `arma.eden.create_logic`
+- `arma.eden.create_module`
+- `arma.eden.create_marker`
+- `arma.eden.create_trigger`
 - `arma.eden.set_entity_transform`
 - `arma.eden.set_entity_attributes`
 - `arma.eden.append_init`
 - `arma.eden.delete_entities`
+- `arma.eden.delete_marker`
 - `arma.eden.set_selection`
 - `arma.eden.clear_selection`
 - `arma.eden.focus_entities`
@@ -49,6 +55,19 @@ ArmaMCP exposes typed MCP tools. Write tools default to reviewable dry-runs wher
 - `arma.eden.remove_from_layer`
 - `arma.eden.set_layer_attributes`
 - `arma.eden.delete_layer`
+- `arma.eden.set_marker_text`
+- `arma.eden.set_marker_type`
+- `arma.eden.set_marker_color`
+- `arma.eden.set_marker_shape`
+- `arma.eden.set_marker_size`
+- `arma.eden.set_marker_alpha`
+- `arma.eden.set_trigger_area`
+- `arma.eden.set_trigger_activation`
+- `arma.eden.set_trigger_statements`
+- `arma.eden.set_trigger_repeatable`
+- `arma.eden.read_module_args`
+- `arma.eden.set_module_args`
+- `arma.eden.sync_module`
 
 ## Composition And Generators
 

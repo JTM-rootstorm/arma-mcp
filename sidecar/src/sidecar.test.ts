@@ -883,7 +883,13 @@ describe("managed MCP discovery fallback", () => {
       "arma.eden.apply_composition",
       "arma.eden.batch",
       "arma.eden.capture_composition",
+      "arma.eden.create_logic",
+      "arma.eden.create_marker",
+      "arma.eden.create_module",
+      "arma.eden.create_object",
+      "arma.eden.create_trigger",
       "arma.eden.create_entity",
+      "arma.eden.delete_marker",
       "arma.eden.exportSelection",
       "arma.eden.find_entities",
       "arma.eden.getObject",
@@ -896,7 +902,20 @@ describe("managed MCP discovery fallback", () => {
       "arma.eden.generate_small_outpost",
       "arma.eden.listPlaced",
       "arma.eden.list_entities",
+      "arma.eden.read_module_args",
+      "arma.eden.set_marker_alpha",
+      "arma.eden.set_marker_color",
+      "arma.eden.set_marker_shape",
+      "arma.eden.set_marker_size",
+      "arma.eden.set_marker_text",
+      "arma.eden.set_marker_type",
       "arma.eden.set_entity_transform",
+      "arma.eden.set_module_args",
+      "arma.eden.set_trigger_activation",
+      "arma.eden.set_trigger_area",
+      "arma.eden.set_trigger_repeatable",
+      "arma.eden.set_trigger_statements",
+      "arma.eden.sync_module",
       "arma.eden.validate_plan",
       "arma.terrain.find_flat_area",
       "arma.terrain.find_nearest_roads",
@@ -1027,6 +1046,26 @@ describe("synthetic Eden action inventory", () => {
     for (const field of ["hiddenSelections", "animationSources", "scopeArsenal", "simulation", "parents"]) {
       expect(getClassDetails).toContain(field);
     }
+  });
+
+  it("keeps dedicated authoring tools as typed wrappers without raw execution", () => {
+    const mcpServer = sqf("sidecar/src/mcpServer.ts");
+
+    for (const toolName of [
+      "arma.eden.create_marker",
+      "arma.eden.set_marker_text",
+      "arma.eden.set_trigger_statements",
+      "arma.eden.read_module_args",
+      "arma.eden.set_module_args",
+      "arma.eden.sync_module"
+    ]) {
+      expect(mcpServer).toContain(`"${toolName}"`);
+      expect(mcpServer).toContain(`case "${toolName}"`);
+    }
+    expect(mcpServer).toContain("registerDedicatedAuthoringTools");
+    expect(mcpServer).toContain('"eden.create_entity"');
+    expect(mcpServer).toContain('"eden.set_entity_attributes"');
+    expect(mcpServer).not.toContain("raw.eval");
   });
 });
 

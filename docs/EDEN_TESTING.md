@@ -111,7 +111,26 @@ arma.spatial.find_lz_candidates
 
 Try one open flat VR position, one water/steep terrain position if available, and one position near placed objects.
 
-14. Test composition capture and apply:
+14. Test dedicated authoring wrappers:
+
+```text
+arma.eden.create_marker
+arma.eden.set_marker_text
+arma.eden.set_marker_color
+arma.eden.delete_marker
+arma.eden.create_trigger
+arma.eden.set_trigger_area
+arma.eden.set_trigger_activation
+arma.eden.set_trigger_statements
+arma.eden.create_module
+arma.eden.read_module_args
+arma.eden.set_module_args
+arma.eden.sync_module
+```
+
+Use `dryRun=true` first. Risky trigger statements should require confirmation before a real write.
+
+15. Test composition capture and apply:
 
 ```text
 arma.eden.capture_composition
@@ -120,7 +139,7 @@ arma.eden.apply_composition
 
 Capture a mixed selected set. Include two synced entities if possible and call capture with `includeConnections=true`. Apply it at a nearby anchor with `dryRun=true`, then apply for real.
 
-15. Test the local procedural generators:
+16. Test the local procedural generators:
 
 ```text
 arma.eden.generate_road_checkpoint
@@ -133,7 +152,7 @@ arma.eden.generate_prop_wall
 
 Generators return dry-run batch plans only. Review and apply their `plan` through `arma.eden.batch`.
 
-16. Confirm Eden creates objects around the selected or supplied anchor. Press undo and confirm the operation rolls back if `collect3DENHistory` grouped the changes successfully.
+17. Confirm Eden creates objects around the selected or supplied anchor. Press undo and confirm the operation rolls back if `collect3DENHistory` grouped the changes successfully.
 
 The addon also attempts throttled selection snapshots via `OnSelectionChange`.
 
