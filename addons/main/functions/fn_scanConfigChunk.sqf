@@ -67,13 +67,21 @@ private _collectClasses = {
     _found
 };
 
-private _classes = [];
-if (isClass _root) then {
+private _cache = missionNamespace getVariable ["AMCP_catalogScanCache", createHashMap];
+private _cacheKey = format ["%1:%2", _scanId, _configPath];
+private _cached = _cache getOrDefault [_cacheKey, []];
+private _classes = _cached;
+if !(_cached isEqualType []) then {
+    _classes = [];
+};
+if (_classes isEqualTo [] && {isClass _root}) then {
     _classes = [_root] call _collectClasses;
+    _cache set [_cacheKey, _classes];
+    missionNamespace setVariable ["AMCP_catalogScanCache", _cache];
 };
 
 private _total = count _classes;
-private _start = _chunkIndex * _chunkSize;
+private _start = ((_params getOrDefault ["startIndex", _chunkIndex * _chunkSize]) max 0) min _total;
 private _end = (_start + _chunkSize) min _total;
 
 if (_start < _total) then {
@@ -127,6 +135,7 @@ createHashMapFromArray [
     ["scan_id", _scanId],
     ["config_path", _configPath],
     ["chunk_index", _chunkIndex],
+    ["start_index", _start],
     ["chunk_size", _chunkSize],
     ["total_records", _total],
     ["is_last_chunk", _end >= _total],

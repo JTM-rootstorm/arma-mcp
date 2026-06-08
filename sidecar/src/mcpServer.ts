@@ -73,6 +73,8 @@ export const MCP_DISCOVERY_FALLBACK_TOOL_NAMES = [
   "arma.camera.captureClassAngles",
   "arma.camera.createPreviewScene",
   "arma.camera.inspectClass",
+  "arma.eden.inspectClass",
+  "arma.eden.planComposition",
   "arma.catalog.scanStart",
   "arma.catalog.scanStatus",
   "arma.catalog.scanPoll",
@@ -123,6 +125,9 @@ type CatalogScanJob = {
   scanId: string;
   targets: string[];
   chunkSize: number;
+  currentChunkSize: number;
+  minChunkSize: number;
+  adaptiveChunkSizing: boolean;
   includeRaw: boolean;
   maxChunks: number;
   timeoutMs: number;
@@ -135,6 +140,8 @@ const catalogScanToolSchema = z.object({
   scanId: z.string().trim().min(1).max(160).optional(),
   targets: z.array(z.string().trim().min(1).max(80)).max(20).default([...DEFAULT_SCAN_TARGETS]),
   chunkSize: z.number().int().positive().max(500).default(100),
+  minChunkSize: z.number().int().positive().max(500).default(25),
+  adaptiveChunkSizing: z.boolean().default(true),
   includeRaw: z.boolean().default(false),
   maxChunks: z.number().int().positive().max(50_000).default(10_000),
   timeoutMs: z.number().int().positive().max(120_000).default(60_000),
@@ -499,6 +506,7 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig,
       })
   );
   registerManagedDiscoveryFallbackTools(server, state, bridgeConfig, runtime);
+  registerPriorityEdenWorkflowTools(server, state);
 
   server.registerTool(
     "arma.bridge.get_status",
@@ -1237,6 +1245,28 @@ function registerEdenInspectionAliasTools(server: McpServer, state: ArmaMcpState
   );
 }
 
+function registerPriorityEdenWorkflowTools(server: McpServer, state: ArmaMcpState): void {
+  server.registerTool(
+    "arma.eden.inspectClass",
+    {
+      title: "Inspect Eden Class",
+      description: "Direct Eden-facing visual class inspection alias, registered early for managed MCP discovery.",
+      inputSchema: visualInspectClassToolSchema.shape
+    },
+    async (input) => jsonToolResult(await inspectClassVisually(state, input))
+  );
+
+  server.registerTool(
+    "arma.eden.planComposition",
+    {
+      title: "Plan Eden Composition",
+      description: "Direct Eden-facing data-only composition planner alias, registered early for managed MCP discovery.",
+      inputSchema: compositionPlanToolSchema.shape
+    },
+    async (input) => jsonToolResult(await createCatalogCompositionPlan(compositionPlanToolSchema.parse(input)))
+  );
+}
+
 function registerVisualAndCameraTools(server: McpServer, state: ArmaMcpState): void {
   server.registerTool(
     "arma.camera.createPreviewScene",
@@ -1497,13 +1527,7 @@ function registerCompositionCatalogTools(server: McpServer): void {
     },
     async (input) => {
       const parsed = compositionPlanToolSchema.parse(input);
-      return withCatalogDb((catalogDb) => {
-        const classNames =
-          parsed.classes && parsed.classes.length > 0
-            ? parsed.classes
-            : recommendCatalogRole(catalogDb, parsed.role ?? "objective_terminal", 10).map((item) => String(item.class_name));
-        return jsonToolResult({ plan: createDataOnlyCompositionPlan(catalogDb, parsed.name, classNames, parsed.anchor, parsed.role) });
-      });
+      return jsonToolResult(await createCatalogCompositionPlan(parsed));
     }
   );
 
@@ -1735,6 +1759,9 @@ async function startCatalogScanTool(
       scanId,
       targets: parsed.targets,
       chunkSize: parsed.chunkSize,
+      currentChunkSize: Math.max(1, Math.min(parsed.chunkSize, parsed.chunkSize)),
+      minChunkSize: Math.min(parsed.minChunkSize, parsed.chunkSize),
+      adaptiveChunkSizing: parsed.adaptiveChunkSizing,
       includeRaw: parsed.includeRaw,
       maxChunks: parsed.maxChunks,
       timeoutMs: parsed.timeoutMs,
@@ -1755,6 +1782,8 @@ async function startCatalogScanTool(
       estimatedWork: {
         targetCount: parsed.targets.length,
         chunkSize: parsed.chunkSize,
+        minChunkSize: parsed.minChunkSize,
+        adaptiveChunkSizing: parsed.adaptiveChunkSizing,
         maxChunks: parsed.maxChunks
       },
       status: getScanProgress(catalogDb, scanId)
@@ -1815,16 +1844,10 @@ async function pollCatalogScan(
       });
       break;
     }
-    let chunkResult;
-    try {
-      chunkResult = await dispatchCatalogAction(
-        state,
-        "catalog.scanChunk",
-        { scanId, configPath: next.target, chunkIndex: next.nextChunkIndex, chunkSize: job?.chunkSize ?? 100, includeRaw: job?.includeRaw ?? false },
-        timeoutMs
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+    const chunkStartIndex = Math.max(0, Number(next.rowsIngested ?? 0));
+    const chunkDispatch = await dispatchAdaptiveScanChunk(state, scanId, next, chunkStartIndex, timeoutMs, job);
+    if (!chunkDispatch.ok) {
+      const message = chunkDispatch.message;
       const scan = await withCatalogDb((catalogDb) => {
         writeScanTargetProgress(catalogDb, {
           scanId,
@@ -1840,6 +1863,7 @@ async function pollCatalogScan(
       catalogScanJobs.delete(scanId);
       return { ok: false, error: { code: "scan_chunk_failed", message }, chunksProcessed, scan };
     }
+    const chunkResult = chunkDispatch.result;
     const chunk = asRecord(chunkResult.result) as CatalogChunk;
     const isLast = chunk.is_last_chunk === true || chunk.isLastChunk === true;
     const totalRecords = numberOrNull(chunk.total_records ?? chunk.totalRecords);
@@ -1904,7 +1928,70 @@ async function finalizeCatalogScan(state: ArmaMcpState, scanId: string, timeoutM
   });
 }
 
-function nextScanTarget(catalogDb: ReturnType<typeof openCatalogDb>, scanId: string): { target: string; targetIndex: number; nextChunkIndex: number } | null {
+async function dispatchAdaptiveScanChunk(
+  state: ArmaMcpState,
+  scanId: string,
+  next: { target: string; targetIndex: number; nextChunkIndex: number; rowsIngested: number },
+  startIndex: number,
+  timeoutMs: number,
+  job?: CatalogScanJob
+): Promise<{ ok: true; result: Awaited<ReturnType<typeof dispatchCatalogAction>> } | { ok: false; message: string }> {
+  while (true) {
+    const chunkSize = job?.currentChunkSize ?? 100;
+    try {
+      const result = await dispatchCatalogAction(
+        state,
+        "catalog.scanChunk",
+        {
+          scanId,
+          configPath: next.target,
+          chunkIndex: next.nextChunkIndex,
+          startIndex,
+          chunkSize,
+          includeRaw: job?.includeRaw ?? false
+        },
+        timeoutMs
+      );
+      return { ok: true, result };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!reduceCatalogScanChunkSizeAfterTimeout(job, message)) {
+        return { ok: false, message };
+      }
+    }
+  }
+}
+
+async function createCatalogCompositionPlan(parsed: z.infer<typeof compositionPlanToolSchema>): Promise<Record<string, unknown>> {
+  return withCatalogDb((catalogDb) => {
+    const classNames =
+      parsed.classes && parsed.classes.length > 0
+        ? parsed.classes
+        : recommendCatalogRole(catalogDb, parsed.role ?? "objective_terminal", 10).map((item) => String(item.class_name));
+    return { plan: createDataOnlyCompositionPlan(catalogDb, parsed.name, classNames, parsed.anchor, parsed.role) };
+  });
+}
+
+function reduceCatalogScanChunkSizeAfterTimeout(job: CatalogScanJob | undefined, message: string): boolean {
+  if (!job?.adaptiveChunkSizing || !isCatalogScanTimeout(message)) {
+    return false;
+  }
+  const nextSize = Math.max(job.minChunkSize, Math.floor(job.currentChunkSize / 2));
+  if (nextSize >= job.currentChunkSize) {
+    return false;
+  }
+  job.currentChunkSize = nextSize;
+  return true;
+}
+
+function isCatalogScanTimeout(message: string): boolean {
+  return /timed out waiting for arma result for catalog\.scanChunk/i.test(message);
+}
+
+function nextScanTarget(
+  catalogDb: ReturnType<typeof openCatalogDb>,
+  scanId: string
+): { target: string; targetIndex: number; nextChunkIndex: number; rowsIngested: number } | null {
   const manifest = getScanManifest(catalogDb, scanId);
   if (!manifest || ["complete", "failed", "cancelled"].includes(String(manifest.status))) {
     return null;
@@ -1915,12 +2002,13 @@ function nextScanTarget(catalogDb: ReturnType<typeof openCatalogDb>, scanId: str
   const row = catalogDb.db
     .prepare(
       `SELECT target, target_index AS targetIndex, next_chunk_index AS nextChunkIndex
+              , rows_ingested AS rowsIngested
        FROM scan_targets
        WHERE scan_id = ? AND status IN ('pending', 'running')
        ORDER BY target_index, target
        LIMIT 1`
     )
-    .get(scanId) as { target: string; targetIndex: number; nextChunkIndex: number } | undefined;
+    .get(scanId) as { target: string; targetIndex: number; nextChunkIndex: number; rowsIngested: number } | undefined;
   return row ?? null;
 }
 
@@ -2385,6 +2473,10 @@ async function callManagedDiscoveryFallbackTool(
       return executeCatalogActionTool(state, "camera.createPreviewScene", cameraPreviewSceneToolSchema, input);
     case "arma.camera.inspectClass":
       return inspectClassWithCamera(state, input);
+    case "arma.eden.inspectClass":
+      return inspectClassVisually(state, input);
+    case "arma.eden.planComposition":
+      return createCatalogCompositionPlan(compositionPlanToolSchema.parse(input));
     case "arma.catalog.scanStart":
       return startCatalogScanTool(state, catalogScanToolSchema.parse(input)).then(extractJsonToolResult);
     case "arma.catalog.scanStatus": {
@@ -2531,13 +2623,7 @@ async function callManagedDiscoveryFallbackTool(
     }
     case "arma.composition.plan": {
       const parsed = compositionPlanToolSchema.parse(input);
-      return withCatalogDb((catalogDb) => {
-        const classNames =
-          parsed.classes && parsed.classes.length > 0
-            ? parsed.classes
-            : recommendCatalogRole(catalogDb, parsed.role ?? "objective_terminal", 10).map((item) => String(item.class_name));
-        return { plan: createDataOnlyCompositionPlan(catalogDb, parsed.name, classNames, parsed.anchor, parsed.role) };
-      });
+      return createCatalogCompositionPlan(parsed);
     }
     case "arma.composition.previewLocal": {
       const parsed = compositionExportToolSchema.parse(input);

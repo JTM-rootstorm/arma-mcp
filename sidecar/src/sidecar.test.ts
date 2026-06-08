@@ -433,6 +433,8 @@ describe("managed MCP discovery fallback", () => {
       "arma.camera.captureClassAngles",
       "arma.camera.createPreviewScene",
       "arma.camera.inspectClass",
+      "arma.eden.inspectClass",
+      "arma.eden.planComposition",
       "arma.catalog.findByDimensions",
       "arma.catalog.findByRole",
       "arma.catalog.findSimilar",

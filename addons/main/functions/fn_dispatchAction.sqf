@@ -111,6 +111,7 @@ switch (_action) do {
         ]];
         private _scanId = _params getOrDefault ["scanId", format ["arma-scan-%1", diag_tickTime]];
         private _addons = ("true" configClasses (configFile >> "CfgPatches")) apply {configName _x};
+        missionNamespace setVariable ["AMCP_catalogScanCache", createHashMap];
         _result = createHashMapFromArray [
             ["scan_id", _scanId],
             ["targets", _targets],
@@ -125,8 +126,16 @@ switch (_action) do {
         _result = [_params] call AMCP_fnc_scanConfigChunk;
     };
     case "catalog.scanFinish": {
+        private _scanId = _params getOrDefault ["scanId", ""];
+        private _cache = missionNamespace getVariable ["AMCP_catalogScanCache", createHashMap];
+        {
+            if ((_x find format ["%1:", _scanId]) == 0) then {
+                _cache deleteAt _x;
+            };
+        } forEach keys _cache;
+        missionNamespace setVariable ["AMCP_catalogScanCache", _cache];
         _result = createHashMapFromArray [
-            ["scan_id", _params getOrDefault ["scanId", ""]],
+            ["scan_id", _scanId],
             ["class_counts", _params getOrDefault ["classCounts", createHashMap]],
             ["finished", true]
         ];
