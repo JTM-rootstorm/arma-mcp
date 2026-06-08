@@ -1,8 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 import type { BridgeConfig } from "./httpBridge.js";
 import { DEFAULT_SCAN_TARGETS, ingestCatalogChunk, stableHash, type CatalogChunk } from "./catalog.js";
 import {
@@ -53,6 +52,7 @@ import {
   type ArmaMcpActionName
 } from "./protocol.js";
 import { enforceToolPolicy } from "./policy.js";
+import { mirrorProfileScreenshot, screenshotCacheDir } from "./screenshotPaths.js";
 import {
   compositionPlanSchema,
   generateCheckpointPlanInputSchema,
@@ -65,7 +65,6 @@ import type { SidecarRuntimeInfo } from "./runtime.js";
 import type { ArmaMcpState } from "./state.js";
 
 const emptyInputSchema = z.object({});
-const sidecarRepoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 export const MCP_DISCOVERY_FALLBACK_TOOL_NAMES = [
   "arma.bridge.diagnostics",
   "arma.bridge.get_capabilities",
@@ -73,6 +72,8 @@ export const MCP_DISCOVERY_FALLBACK_TOOL_NAMES = [
   "arma.camera.captureClassAngles",
   "arma.camera.createPreviewScene",
   "arma.camera.inspectClass",
+  "arma_composition_plan",
+  "arma_visual_inspect_class",
   "arma.eden.inspectClass",
   "arma.eden.planComposition",
   "arma.catalog.scanStart",
@@ -1253,6 +1254,26 @@ function registerEdenInspectionAliasTools(server: McpServer, state: ArmaMcpState
 
 function registerPriorityEdenWorkflowTools(server: McpServer, state: ArmaMcpState): void {
   server.registerTool(
+    "arma_visual_inspect_class",
+    {
+      title: "Inspect Class Visually",
+      description: "Discovery-friendly alias for the high-level visual class inspection workflow.",
+      inputSchema: visualInspectClassToolSchema.shape
+    },
+    async (input) => jsonToolResult(await inspectClassVisually(state, input))
+  );
+
+  server.registerTool(
+    "arma_composition_plan",
+    {
+      title: "Plan Composition",
+      description: "Discovery-friendly alias for the high-level data-only composition planner.",
+      inputSchema: compositionPlanToolSchema.shape
+    },
+    async (input) => jsonToolResult(await createCatalogCompositionPlan(compositionPlanToolSchema.parse(input)))
+  );
+
+  server.registerTool(
     "arma.eden.inspectClass",
     {
       title: "Inspect Eden Class",
@@ -1643,83 +1664,6 @@ function normalizeScreenshotArtifacts(
 
 function asScreenshotRows(input: unknown): Array<Record<string, unknown>> {
   return Array.isArray(input) ? input.map(asRecord) : [];
-}
-
-function screenshotCacheDir(className: string): string {
-  return resolve(process.env.ARMA_MCP_SCREENSHOT_CACHE_DIR ?? resolve(sidecarRepoRoot, ".mcp-cache/arma/screenshots"), safePathSegment(className));
-}
-
-function mirrorProfileScreenshot(profileRelativePath: string, targetPath: string): { copied: boolean; warning?: string } {
-  if (!profileRelativePath) {
-    return { copied: false, warning: "missing_profile_relative_path" };
-  }
-  const normalizedRelative = profileRelativePath.replace(/\\/g, "/").replace(/^\/+/, "");
-  const sourceRoot = process.env.ARMA_MCP_SCREENSHOT_SOURCE_DIR ?? detectScreenshotSourceRoot(normalizedRelative);
-  if (!sourceRoot) {
-    return { copied: false, warning: "set_ARMA_MCP_SCREENSHOT_SOURCE_DIR_or_use_standard_Arma_profile_Screenshots_path_to_copy_pngs" };
-  }
-  const sourcePath = resolve(sourceRoot, normalizedRelative);
-  const resolvedRoot = resolve(sourceRoot);
-  if (sourcePath !== resolvedRoot && !sourcePath.startsWith(`${resolvedRoot}${sep}`)) {
-    return { copied: false, warning: "profile_relative_path_escaped_source_root" };
-  }
-  if (!waitForFile(sourcePath, 3_000)) {
-    return { copied: false, warning: `source_png_not_found:${sourcePath}` };
-  }
-  mkdirSync(dirname(targetPath), { recursive: true });
-  copyFileSync(sourcePath, targetPath);
-  return { copied: true };
-}
-
-function detectScreenshotSourceRoot(normalizedRelative: string): string | undefined {
-  for (const candidate of screenshotSourceRootCandidates()) {
-    if (existsSync(resolve(candidate, normalizedRelative))) {
-      return candidate;
-    }
-  }
-  return undefined;
-}
-
-function screenshotSourceRootCandidates(): string[] {
-  const home = process.env.HOME;
-  if (!home) {
-    return [];
-  }
-  const otherProfileRoots = [
-    join(home, ".local/share/Arma 3 - Other Profiles"),
-    join(home, ".local/share/Steam/steamapps/compatdata/107410/pfx/drive_c/users/steamuser/Documents/Arma 3 - Other Profiles")
-  ];
-  return [
-    join(home, ".local/share/Arma 3/Screenshots"),
-    join(home, ".local/share/Arma 3 - Other Profiles/Screenshots"),
-    join(home, ".local/share/Steam/steamapps/compatdata/107410/pfx/drive_c/users/steamuser/Documents/Arma 3/Screenshots"),
-    join(home, ".local/share/Steam/steamapps/compatdata/107410/pfx/drive_c/users/steamuser/Documents/Arma 3 - Other Profiles/Screenshots"),
-    ...otherProfileRoots.flatMap((root) => profileScreenshotDirs(root))
-  ];
-}
-
-function profileScreenshotDirs(root: string): string[] {
-  if (!existsSync(root)) {
-    return [];
-  }
-  try {
-    return readdirSync(root, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => join(root, entry.name, "Screenshots"));
-  } catch {
-    return [];
-  }
-}
-
-function waitForFile(path: string, timeoutMs: number): boolean {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() <= deadline) {
-    if (existsSync(path)) {
-      return true;
-    }
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
-  }
-  return false;
 }
 
 async function startCatalogScanTool(
@@ -2479,8 +2423,10 @@ async function callManagedDiscoveryFallbackTool(
       return executeCatalogActionTool(state, "camera.createPreviewScene", cameraPreviewSceneToolSchema, input);
     case "arma.camera.inspectClass":
       return inspectClassWithCamera(state, input);
+    case "arma_visual_inspect_class":
     case "arma.eden.inspectClass":
       return inspectClassVisually(state, input);
+    case "arma_composition_plan":
     case "arma.eden.planComposition":
       return createCatalogCompositionPlan(compositionPlanToolSchema.parse(input));
     case "arma.catalog.scan":

@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
+import { getScreenshotMirroringStatus } from "./screenshotPaths.js";
 
 export const CATALOG_SCHEMA_VERSION = 1 as const;
 export const DEFAULT_CATALOG_DB_PATH = ".mcp-cache/arma/catalog.sqlite";
@@ -134,9 +135,7 @@ export function getCatalogStatus(catalogDb: CatalogDb): Record<string, unknown> 
     visualInspection: {
       screenshotCapture: true,
       status: "implemented",
-      cacheMirroring: Boolean(process.env.ARMA_MCP_SCREENSHOT_SOURCE_DIR),
-      cacheMirroringMode: process.env.ARMA_MCP_SCREENSHOT_SOURCE_DIR ? "configured" : "auto_detect_standard_paths",
-      sourceDirEnv: "ARMA_MCP_SCREENSHOT_SOURCE_DIR"
+      ...getScreenshotMirroringStatus()
     }
   };
 }

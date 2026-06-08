@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { generateCheckpointPlan } from "./checkpointPlanner.js";
@@ -11,6 +11,7 @@ import {
   findCatalogByDimensions,
   getCatalogSearchDiagnostics,
   getCatalogClass,
+  getCatalogStatus,
   getLatestScanManifest,
   getScanProgress,
   initializeScanTargets,
@@ -166,6 +167,39 @@ describe("catalog database", () => {
       });
       expect(listClassesMissingMeasurements(catalog)).toHaveLength(0);
     } finally {
+      closeCatalogDb(catalog);
+    }
+  });
+
+  it("reports screenshot cache mirroring when a standard Arma screenshots directory is autodetected", () => {
+    const catalog = openCatalogDb(tempCatalogPath());
+    const oldHome = process.env.HOME;
+    const oldSourceDir = process.env.ARMA_MCP_SCREENSHOT_SOURCE_DIR;
+    const home = mkdtempSync(join(tmpdir(), "arma-mcp-home-"));
+    tempDirs.push(home);
+    try {
+      ensureCatalogSchema(catalog);
+      delete process.env.ARMA_MCP_SCREENSHOT_SOURCE_DIR;
+      process.env.HOME = home;
+      const screenshotDir = join(home, ".local/share/Arma 3/Screenshots");
+      mkdirSync(screenshotDir, { recursive: true });
+
+      expect(getCatalogStatus(catalog).visualInspection).toMatchObject({
+        cacheMirroring: true,
+        cacheMirroringMode: "auto_detected_standard_path",
+        sourceDir: screenshotDir
+      });
+    } finally {
+      if (oldHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = oldHome;
+      }
+      if (oldSourceDir === undefined) {
+        delete process.env.ARMA_MCP_SCREENSHOT_SOURCE_DIR;
+      } else {
+        process.env.ARMA_MCP_SCREENSHOT_SOURCE_DIR = oldSourceDir;
+      }
       closeCatalogDb(catalog);
     }
   });
@@ -433,6 +467,8 @@ describe("managed MCP discovery fallback", () => {
       "arma.camera.captureClassAngles",
       "arma.camera.createPreviewScene",
       "arma.camera.inspectClass",
+      "arma_composition_plan",
+      "arma_visual_inspect_class",
       "arma.eden.inspectClass",
       "arma.eden.planComposition",
       "arma.assets.search_classes",

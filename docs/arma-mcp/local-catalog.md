@@ -80,8 +80,9 @@ when raw full config capture is needed.
 
 The addon captures PNGs with Arma's `screenshot` command, which writes under the
 active Arma profile `Screenshots` directory. The sidecar records the profile
-relative path returned by Arma and can mirror PNG files into `.mcp-cache` when
-this environment variable points to that profile screenshot directory:
+relative path returned by Arma and mirrors PNG files into `.mcp-cache` when it
+can autodetect a standard Arma profile screenshots directory. If autodetection
+does not find the active profile, set:
 
 ```text
 ARMA_MCP_SCREENSHOT_SOURCE_DIR=/path/to/Arma 3 - Other Profiles/<profile>/Screenshots
@@ -95,6 +96,7 @@ arma.camera.captureClassAngles
 arma.camera.captureCurrentView
 arma.camera.destroyPreviewScene
 arma.visual.inspectClass
+arma_visual_inspect_class
 arma.visual.getScreenshots
 arma.visual.addTag
 arma.visual.findByVisualTags
@@ -104,5 +106,6 @@ arma.visual.findByVisualTags
 internal camera around it, captures requested angles, stores screenshot metadata
 in `class_screenshots`, and returns both the Arma profile-relative path and the
 local cache path when mirroring succeeds. If mirroring is not configured, the
-tool still captures through Arma and returns a `copy_warning` telling the agent
-which environment variable is missing.
+tool still captures through Arma and returns a `copy_warning` with the source
+path it tried, or tells the agent to set `ARMA_MCP_SCREENSHOT_SOURCE_DIR` when
+no standard screenshots directory is detectable.

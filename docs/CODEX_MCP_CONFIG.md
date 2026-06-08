@@ -89,6 +89,11 @@ managed registry is stale, `arma_discovery` and `arma_call` provide an
 allowlisted fallback for the PLAN-002 discovery-gap tools without exposing raw
 SQF or shell execution.
 
+For managed discovery contexts that surface simpler underscore names more
+reliably than dotted names, `arma_visual_inspect_class` aliases
+`arma.visual.inspectClass`, and `arma_composition_plan` aliases
+`arma.composition.plan`.
+
 If Eden stops polling after a bridge restart, restart or reload Arma Eden after
 the HTTP bridge is already listening. The direct HTTP bridge remains a useful
 diagnostic fallback while the managed Codex MCP host is stale, but keep bearer
