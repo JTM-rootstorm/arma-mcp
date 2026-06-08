@@ -1,13 +1,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BridgeConfig } from "./httpBridge.js";
 import { DEFAULT_SCAN_TARGETS, ingestCatalogChunk, stableHash, type CatalogChunk } from "./catalog.js";
 import {
   addCatalogVisualTag,
   closeCatalogDb,
+  countCatalogClassesForScanTarget,
   createVisualInspectionRun,
   ensureCatalogSchema,
   findCatalogByDimensions,
@@ -80,7 +81,22 @@ export const MCP_DISCOVERY_FALLBACK_TOOL_NAMES = [
   "arma.catalog.scanRepair",
   "arma.catalog.search",
   "arma.catalog.status",
+  "arma.catalog.getClass",
+  "arma.catalog.getTags",
+  "arma.catalog.listMods",
+  "arma.catalog.listFactions",
+  "arma.catalog.listCategories",
+  "arma.catalog.measureClass",
+  "arma.catalog.measureSearchResults",
+  "arma.catalog.measureMissing",
+  "arma.catalog.recommend",
+  "arma.catalog.findByRole",
+  "arma.catalog.findSimilar",
+  "arma.catalog.findByDimensions",
   "arma.composition.plan",
+  "arma.composition.previewLocal",
+  "arma.composition.exportSqf",
+  "arma.composition.exportEdenInstructions",
   "arma.eden.apply_composition",
   "arma.eden.batch",
   "arma.eden.create_entity",
@@ -97,6 +113,9 @@ export const MCP_DISCOVERY_FALLBACK_TOOL_NAMES = [
   "arma.eden.validate_plan",
   "arma.terrain.sample_area",
   "arma.visual.inspectClass",
+  "arma.visual.getScreenshots",
+  "arma.visual.addTag",
+  "arma.visual.findByVisualTags",
   "arma_queue_apply_plan",
   "arma_request_editor_snapshot"
 ] as const;
@@ -118,7 +137,7 @@ const catalogScanToolSchema = z.object({
   chunkSize: z.number().int().positive().max(500).default(100),
   includeRaw: z.boolean().default(false),
   maxChunks: z.number().int().positive().max(50_000).default(10_000),
-  timeoutMs: z.number().int().positive().max(60_000).default(30_000),
+  timeoutMs: z.number().int().positive().max(120_000).default(60_000),
   background: z.boolean().default(true)
 });
 const managedDiscoveryFallbackCallSchema = z.object({
@@ -132,14 +151,14 @@ const catalogScanPollToolSchema = z.object({
   scanId: z.string().trim().min(1).max(160).optional(),
   maxChunks: z.number().int().positive().max(100).default(5),
   maxRuntimeMs: z.number().int().positive().max(55_000).default(45_000),
-  timeoutMs: z.number().int().positive().max(60_000).default(30_000)
+  timeoutMs: z.number().int().positive().max(120_000).default(60_000)
 });
 const catalogScanCancelToolSchema = z.object({
   scanId: z.string().trim().min(1).max(160)
 });
 const catalogScanFinalizeToolSchema = z.object({
   scanId: z.string().trim().min(1).max(160).optional(),
-  timeoutMs: z.number().int().positive().max(60_000).default(30_000)
+  timeoutMs: z.number().int().positive().max(120_000).default(60_000)
 });
 
 export function pruneTerminalCatalogScanJobIds<T extends { promise?: Promise<void> }>(
@@ -1604,14 +1623,14 @@ function mirrorProfileScreenshot(profileRelativePath: string, targetPath: string
   if (!profileRelativePath) {
     return { copied: false, warning: "missing_profile_relative_path" };
   }
-  const sourceRoot = process.env.ARMA_MCP_SCREENSHOT_SOURCE_DIR;
-  if (!sourceRoot) {
-    return { copied: false, warning: "set_ARMA_MCP_SCREENSHOT_SOURCE_DIR_to_profile_Screenshots_to_copy_pngs" };
-  }
   const normalizedRelative = profileRelativePath.replace(/\\/g, "/").replace(/^\/+/, "");
+  const sourceRoot = process.env.ARMA_MCP_SCREENSHOT_SOURCE_DIR ?? detectScreenshotSourceRoot(normalizedRelative);
+  if (!sourceRoot) {
+    return { copied: false, warning: "set_ARMA_MCP_SCREENSHOT_SOURCE_DIR_or_use_standard_Arma_profile_Screenshots_path_to_copy_pngs" };
+  }
   const sourcePath = resolve(sourceRoot, normalizedRelative);
   const resolvedRoot = resolve(sourceRoot);
-  if (!sourcePath.startsWith(resolvedRoot)) {
+  if (sourcePath !== resolvedRoot && !sourcePath.startsWith(`${resolvedRoot}${sep}`)) {
     return { copied: false, warning: "profile_relative_path_escaped_source_root" };
   }
   if (!waitForFile(sourcePath, 3_000)) {
@@ -1620,6 +1639,46 @@ function mirrorProfileScreenshot(profileRelativePath: string, targetPath: string
   mkdirSync(dirname(targetPath), { recursive: true });
   copyFileSync(sourcePath, targetPath);
   return { copied: true };
+}
+
+function detectScreenshotSourceRoot(normalizedRelative: string): string | undefined {
+  for (const candidate of screenshotSourceRootCandidates()) {
+    if (existsSync(resolve(candidate, normalizedRelative))) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function screenshotSourceRootCandidates(): string[] {
+  const home = process.env.HOME;
+  if (!home) {
+    return [];
+  }
+  const otherProfileRoots = [
+    join(home, ".local/share/Arma 3 - Other Profiles"),
+    join(home, ".local/share/Steam/steamapps/compatdata/107410/pfx/drive_c/users/steamuser/Documents/Arma 3 - Other Profiles")
+  ];
+  return [
+    join(home, ".local/share/Arma 3/Screenshots"),
+    join(home, ".local/share/Arma 3 - Other Profiles/Screenshots"),
+    join(home, ".local/share/Steam/steamapps/compatdata/107410/pfx/drive_c/users/steamuser/Documents/Arma 3/Screenshots"),
+    join(home, ".local/share/Steam/steamapps/compatdata/107410/pfx/drive_c/users/steamuser/Documents/Arma 3 - Other Profiles/Screenshots"),
+    ...otherProfileRoots.flatMap((root) => profileScreenshotDirs(root))
+  ];
+}
+
+function profileScreenshotDirs(root: string): string[] {
+  if (!existsSync(root)) {
+    return [];
+  }
+  try {
+    return readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(root, entry.name, "Screenshots"));
+  } catch {
+    return [];
+  }
 }
 
 function waitForFile(path: string, timeoutMs: number): boolean {
@@ -1638,19 +1697,32 @@ async function startCatalogScanTool(
   parsed: z.infer<typeof catalogScanToolSchema>
 ) {
   return withCatalogDb(async (catalogDb) => {
-    const started = await dispatchCatalogAction(
-      state,
-      "catalog.scanStart",
-      {
-        scanId: parsed.scanId,
-        targets: parsed.targets,
-        chunkSize: parsed.chunkSize,
-        includeRaw: parsed.includeRaw
-      },
-      parsed.timeoutMs
-    );
+    const scanId = parsed.scanId ?? `catalog-${Date.now()}`;
+    writeScanManifest(catalogDb, {
+      scanId,
+      loadedModsHash: "pending",
+      loadedAddonsHash: "pending",
+      status: "running"
+    });
+    initializeScanTargets(catalogDb, scanId, parsed.targets);
+    let started;
+    try {
+      started = await dispatchCatalogAction(
+        state,
+        "catalog.scanStart",
+        {
+          scanId,
+          targets: parsed.targets,
+          chunkSize: parsed.chunkSize,
+          includeRaw: parsed.includeRaw
+        },
+        parsed.timeoutMs
+      );
+    } catch (error) {
+      markScanFinished(catalogDb, scanId, "failed", undefined, error instanceof Error ? error.message : String(error));
+      throw error;
+    }
     const startPayload = asRecord(started.result);
-    const scanId = String(startPayload.scan_id ?? startPayload.scanId ?? parsed.scanId ?? `catalog-${Date.now()}`);
     writeScanManifest(catalogDb, {
       scanId,
       gameVersion: stringOrNull(startPayload.game_version ?? startPayload.gameVersion),
@@ -1659,7 +1731,6 @@ async function startCatalogScanTool(
       loadedAddonsHash: stableHash(startPayload.loaded_addons ?? startPayload.loadedAddons ?? []),
       status: "running"
     });
-    initializeScanTargets(catalogDb, scanId, parsed.targets);
     const job: CatalogScanJob = {
       scanId,
       targets: parsed.targets,
@@ -1744,15 +1815,35 @@ async function pollCatalogScan(
       });
       break;
     }
-    const chunkResult = await dispatchCatalogAction(
-      state,
-      "catalog.scanChunk",
-      { scanId, configPath: next.target, chunkIndex: next.nextChunkIndex, chunkSize: job?.chunkSize ?? 100 },
-      timeoutMs
-    );
+    let chunkResult;
+    try {
+      chunkResult = await dispatchCatalogAction(
+        state,
+        "catalog.scanChunk",
+        { scanId, configPath: next.target, chunkIndex: next.nextChunkIndex, chunkSize: job?.chunkSize ?? 100, includeRaw: job?.includeRaw ?? false },
+        timeoutMs
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const scan = await withCatalogDb((catalogDb) => {
+        writeScanTargetProgress(catalogDb, {
+          scanId,
+          target: next.target,
+          targetIndex: next.targetIndex,
+          status: "failed",
+          error: message,
+          finishedAt: new Date().toISOString()
+        });
+        markScanFinished(catalogDb, scanId, "failed", undefined, message);
+        return getScanProgress(catalogDb, scanId);
+      });
+      catalogScanJobs.delete(scanId);
+      return { ok: false, error: { code: "scan_chunk_failed", message }, chunksProcessed, scan };
+    }
     const chunk = asRecord(chunkResult.result) as CatalogChunk;
     const isLast = chunk.is_last_chunk === true || chunk.isLastChunk === true;
     const totalRecords = numberOrNull(chunk.total_records ?? chunk.totalRecords);
+    const sourceRecordsScanned = Array.isArray(chunk.records) ? chunk.records.length : 0;
     const rowsIngested = await withCatalogDb((catalogDb) => {
       writeScanTargetProgress(catalogDb, {
         scanId,
@@ -1768,7 +1859,7 @@ async function pollCatalogScan(
         status: isLast ? "complete" : "running",
         nextChunkIndex: next.nextChunkIndex + 1,
         totalRecords,
-        rowsIngestedDelta: ingested,
+        rowsIngestedDelta: sourceRecordsScanned,
         finishedAt: isLast ? new Date().toISOString() : null
       });
       return ingested;
@@ -1796,7 +1887,7 @@ async function finalizeCatalogScan(state: ArmaMcpState, scanId: string, timeoutM
     }
     const targets = Array.isArray(progress.targets) ? (progress.targets as Record<string, unknown>[]) : [];
     const incomplete = targets.filter((target) => !["complete", "failed", "cancelled"].includes(String(target.status)));
-    const counts = Object.fromEntries(targets.map((target) => [String(target.target), Number(target.rowsIngested ?? 0)]));
+    const counts = Object.fromEntries(targets.map((target) => [String(target.target), countCatalogClassesForScanTarget(catalogDb, scanId, String(target.target))]));
     if (incomplete.length > 0) {
       markScanFinished(catalogDb, scanId, "partial", counts);
       return { ok: false, error: { code: "scan_incomplete", targets: incomplete.map((target) => target.target) }, scan: getScanProgress(catalogDb, scanId) };
@@ -2359,6 +2450,85 @@ async function callManagedDiscoveryFallbackTool(
     case "arma.catalog.status":
       emptyInputSchema.parse(input);
       return withCatalogDb((catalogDb) => ({ ok: true, catalog: getCatalogStatus(catalogDb) }));
+    case "arma.catalog.getClass": {
+      const parsed = catalogClassToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => ({ class: getCatalogClass(catalogDb, parsed.className) }));
+    }
+    case "arma.catalog.getTags": {
+      const parsed = catalogTagsToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => ({ tags: getCatalogTags(catalogDb, parsed.className) }));
+    }
+    case "arma.catalog.listMods":
+      emptyInputSchema.parse(input);
+      return withCatalogDb((catalogDb) => ({ mods: listCatalogMods(catalogDb) }));
+    case "arma.catalog.listFactions":
+      emptyInputSchema.parse(input);
+      return withCatalogDb((catalogDb) => ({ factions: listCatalogFactions(catalogDb) }));
+    case "arma.catalog.listCategories":
+      emptyInputSchema.parse(input);
+      return withCatalogDb((catalogDb) => ({ categories: listCatalogCategories(catalogDb) }));
+    case "arma.catalog.measureClass": {
+      const parsed = catalogMeasureClassToolSchema.parse(input);
+      return withCatalogDb(async (catalogDb) => ({ result: await measureCatalogClass(catalogDb, state, parsed.className, parsed.force, parsed.timeoutMs) }));
+    }
+    case "arma.catalog.measureSearchResults": {
+      const parsed = catalogMeasureSearchResultsToolSchema.parse(input);
+      return withCatalogDb(async (catalogDb) => {
+        const results = searchCatalogClasses(catalogDb, {
+          query: parsed.query,
+          kind: parsed.kind,
+          tags: parsed.tags,
+          visualTags: parsed.visual_tags,
+          limit: parsed.limit
+        });
+        const measured: Record<string, unknown>[] = [];
+        const skipped: Record<string, unknown>[] = [];
+        const failed: Record<string, unknown>[] = [];
+        for (const result of results) {
+          const measurement = await measureCatalogClass(catalogDb, state, String(result.class_name), parsed.force, parsed.timeoutMs);
+          bucketMeasurementResult(measurement, measured, skipped, failed);
+        }
+        return { measured, skipped, failed };
+      });
+    }
+    case "arma.catalog.measureMissing": {
+      const parsed = catalogMeasureMissingToolSchema.parse(input);
+      return withCatalogDb(async (catalogDb) => {
+        const candidates = listClassesMissingMeasurements(catalogDb, parsed.limit, parsed.kinds);
+        const measured: Record<string, unknown>[] = [];
+        const skipped: Record<string, unknown>[] = [];
+        const failed: Record<string, unknown>[] = [];
+        for (const candidate of candidates) {
+          const measurement = await measureCatalogClass(catalogDb, state, String(candidate.className), parsed.force, parsed.timeoutMs);
+          bucketMeasurementResult(measurement, measured, skipped, failed);
+        }
+        return { measured, skipped, failed };
+      });
+    }
+    case "arma.catalog.recommend":
+    case "arma.catalog.findByRole": {
+      const parsed = catalogRoleToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => ({ results: recommendCatalogRole(catalogDb, parsed.role, parsed.limit) }));
+    }
+    case "arma.catalog.findSimilar": {
+      const parsed = findSimilarToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => {
+        const catalogClass = getCatalogClass(catalogDb, parsed.className);
+        if (!catalogClass) {
+          return { results: [] };
+        }
+        const tags = Array.isArray(catalogClass.tags) ? catalogClass.tags.map(String).slice(0, 3) : [];
+        return {
+          results: searchCatalogClasses(catalogDb, { kind: String(catalogClass.kind ?? ""), tags, limit: parsed.limit }).filter(
+            (item) => item.class_name !== parsed.className
+          )
+        };
+      });
+    }
+    case "arma.catalog.findByDimensions": {
+      const parsed = findByDimensionsToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => ({ results: findCatalogByDimensions(catalogDb, parsed) }));
+    }
     case "arma.composition.plan": {
       const parsed = compositionPlanToolSchema.parse(input);
       return withCatalogDb((catalogDb) => {
@@ -2368,6 +2538,18 @@ async function callManagedDiscoveryFallbackTool(
             : recommendCatalogRole(catalogDb, parsed.role ?? "objective_terminal", 10).map((item) => String(item.class_name));
         return { plan: createDataOnlyCompositionPlan(catalogDb, parsed.name, classNames, parsed.anchor, parsed.role) };
       });
+    }
+    case "arma.composition.previewLocal": {
+      const parsed = compositionExportToolSchema.parse(input);
+      return { ok: true, previewOnly: true, plan: parsed.plan };
+    }
+    case "arma.composition.exportSqf": {
+      const parsed = compositionExportToolSchema.parse(input);
+      return { sqf: exportPlanSqf(parsed.plan) };
+    }
+    case "arma.composition.exportEdenInstructions": {
+      const parsed = compositionExportToolSchema.parse(input);
+      return { instructions: exportEdenInstructions(parsed.plan) };
     }
     case "arma.eden.apply_composition":
       return executeActionTool(state, "eden.apply_composition", "write", applyCompositionToolSchema, input);
@@ -2404,6 +2586,28 @@ async function callManagedDiscoveryFallbackTool(
       return executeActionTool(state, "terrain.sample_area", "read", terrainSampleAreaToolSchema, input);
     case "arma.visual.inspectClass":
       return inspectClassVisually(state, input);
+    case "arma.visual.getScreenshots": {
+      const parsed = catalogClassToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => ({ screenshots: listClassScreenshots(catalogDb, parsed.className) }));
+    }
+    case "arma.visual.addTag": {
+      const parsed = visualAddTagToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => {
+        addCatalogVisualTag(catalogDb, {
+          className: parsed.className,
+          tag: parsed.tag,
+          confidence: parsed.confidence,
+          source: parsed.source
+        });
+        return { ok: true, className: parsed.className, tag: parsed.tag };
+      });
+    }
+    case "arma.visual.findByVisualTags": {
+      const parsed = z
+        .object({ visual_tags: z.array(z.string().min(1)).min(1).max(20), limit: z.number().int().positive().max(100).default(25) })
+        .parse(input);
+      return withCatalogDb((catalogDb) => ({ results: searchCatalogClasses(catalogDb, { visualTags: parsed.visual_tags, limit: parsed.limit }) }));
+    }
     case "arma_queue_apply_plan": {
       const parsed = queueApplyPlanInputSchema.parse(input);
       if (parsed.plan.dryRun) {

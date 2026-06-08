@@ -194,6 +194,17 @@ export function createState(maxEvents = 200, requestTimeoutMs = 30_000, maxPendi
       const result = new Promise<ArmaMcpActionResult>((resolve, reject) => {
         const timeout = setTimeout(() => {
           pendingResults.delete(action.requestId);
+          const queuedIndex = commands.findIndex((command) => "requestId" in command && command.requestId === action.requestId);
+          if (queuedIndex >= 0) {
+            commands.splice(queuedIndex, 1);
+            rememberEvent({
+              id: createId("evt"),
+              createdAt: new Date().toISOString(),
+              type: "commandExpired",
+              message: `Dropped timed-out ${action.action}`,
+              payload: { requestId: action.requestId, action: action.action }
+            });
+          }
           rememberAudit(action, "timeout");
           reject(new Error(`Timed out waiting for Arma result for ${action.action}`));
         }, input.timeoutMs ?? requestTimeoutMs);

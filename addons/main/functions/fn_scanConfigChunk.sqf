@@ -6,6 +6,7 @@ private _scanId = _params getOrDefault ["scanId", ""];
 private _configPath = _params getOrDefault ["configPath", "CfgVehicles"];
 private _chunkIndex = _params getOrDefault ["chunkIndex", 0];
 private _chunkSize = _params getOrDefault ["chunkSize", 100];
+private _includeRaw = _params getOrDefault ["includeRaw", false];
 
 private _root = configFile >> _configPath;
 private _records = [];
@@ -78,17 +79,7 @@ private _end = (_start + _chunkSize) min _total;
 if (_start < _total) then {
     for "_index" from _start to (_end - 1) do {
         private _cfg = _classes select _index;
-        private _rawConfig = createHashMapFromArray [
-            ["scope", [_cfg, "scope", -1] call _number],
-            ["scopeCurator", [_cfg, "scopeCurator", -1] call _number],
-            ["scopeArsenal", [_cfg, "scopeArsenal", -1] call _number],
-            ["requiredAddons", [_cfg, "requiredAddons", []] call _array],
-            ["units", [_cfg, "units", []] call _array],
-            ["weapons", [_cfg, "weapons", []] call _array],
-            ["magazines", [_cfg, "magazines", []] call _array]
-        ];
-
-        _records pushBack (createHashMapFromArray [
+        private _record = createHashMapFromArray [
             ["class_name", configName _cfg],
             ["config_path", _configPath],
             ["display_name", [_cfg, "displayName", ""] call _text],
@@ -106,15 +97,29 @@ if (_start < _total) then {
             ["dlc", [_cfg, "dlc", ""] call _text],
             ["source_addon", [_cfg] call _sourceAddon],
             ["source_mod", [_cfg] call _sourceMod],
-            ["picture", [_cfg, "picture", ""] call _text],
-            ["icon", [_cfg, "icon", ""] call _text],
-            ["editor_preview", [_cfg, "editorPreview", ""] call _text],
-            ["weapons", [_cfg, "weapons", []] call _array],
-            ["magazines", [_cfg, "magazines", []] call _array],
-            ["linked_items", [_cfg, "linkedItems", []] call _array],
-            ["raw_config", _rawConfig],
             ["parents", [_cfg] call _parents]
-        ]);
+        ];
+
+        if (_includeRaw) then {
+            private _rawConfig = createHashMapFromArray [
+                ["scope", [_cfg, "scope", -1] call _number],
+                ["scopeCurator", [_cfg, "scopeCurator", -1] call _number],
+                ["scopeArsenal", [_cfg, "scopeArsenal", -1] call _number],
+                ["requiredAddons", [_cfg, "requiredAddons", []] call _array],
+                ["units", [_cfg, "units", []] call _array],
+                ["weapons", [_cfg, "weapons", []] call _array],
+                ["magazines", [_cfg, "magazines", []] call _array]
+            ];
+            _record set ["picture", [_cfg, "picture", ""] call _text];
+            _record set ["icon", [_cfg, "icon", ""] call _text];
+            _record set ["editor_preview", [_cfg, "editorPreview", ""] call _text];
+            _record set ["weapons", [_cfg, "weapons", []] call _array];
+            _record set ["magazines", [_cfg, "magazines", []] call _array];
+            _record set ["linked_items", [_cfg, "linkedItems", []] call _array];
+            _record set ["raw_config", _rawConfig];
+        };
+
+        _records pushBack _record;
     };
 };
 

@@ -135,6 +135,7 @@ export function getCatalogStatus(catalogDb: CatalogDb): Record<string, unknown> 
       screenshotCapture: true,
       status: "implemented",
       cacheMirroring: Boolean(process.env.ARMA_MCP_SCREENSHOT_SOURCE_DIR),
+      cacheMirroringMode: process.env.ARMA_MCP_SCREENSHOT_SOURCE_DIR ? "configured" : "auto_detect_standard_paths",
       sourceDirEnv: "ARMA_MCP_SCREENSHOT_SOURCE_DIR"
     }
   };
@@ -158,14 +159,15 @@ export function searchCatalogClasses(catalogDb: CatalogDb, input: CatalogSearchI
   const filters: string[] = [];
   const values: Array<string | number | null> = [];
   let from = "classes";
+  const expandedKinds = expandKindFilter(input.kind, input);
   if (input.query?.trim()) {
     from = "classes_fts JOIN classes ON classes.rowid = classes_fts.rowid";
     filters.push("classes_fts MATCH ?");
     values.push(input.query.trim());
   }
-  if (input.kind) {
-    filters.push("classes.kind = ?");
-    values.push(input.kind);
+  if (expandedKinds.length > 0) {
+    filters.push(`classes.kind IN (${expandedKinds.map(() => "?").join(", ")})`);
+    values.push(...expandedKinds);
   }
   for (const tag of input.tags ?? []) {
     filters.push(
@@ -197,7 +199,7 @@ export function searchCatalogClasses(catalogDb: CatalogDb, input: CatalogSearchI
         classes.kind,
         classes.subkind,
         classes.tags_json AS tagsJson,
-        COALESCE((SELECT json_group_array(tag) FROM class_visual_tags WHERE class_visual_tags.class_name = classes.class_name), '[]') AS visualTagsJson,
+        COALESCE((SELECT json_group_array(DISTINCT tag) FROM class_visual_tags WHERE class_visual_tags.class_name = classes.class_name), '[]') AS visualTagsJson,
         classes.source_addon AS sourceAddon,
         classes.source_mod_guess AS sourceMod,
         classes.editor_category AS editorCategory,
@@ -208,7 +210,18 @@ export function searchCatalogClasses(catalogDb: CatalogDb, input: CatalogSearchI
        FROM ${from}
        LEFT JOIN class_measurements ON class_measurements.class_name = classes.class_name
        ${filters.length > 0 ? `WHERE ${filters.join(" AND ")}` : ""}
-       ORDER BY classes.display_name IS NULL, classes.display_name, classes.class_name
+       ORDER BY
+                (CASE WHEN classes.scope >= 2 THEN -40 ELSE 0 END) +
+                (CASE WHEN classes.scope_curator >= 2 THEN -20 ELSE 0 END) +
+                (CASE WHEN classes.display_name IS NOT NULL AND classes.display_name != '' THEN -15 ELSE 0 END) +
+                (CASE WHEN classes.model_path IS NOT NULL AND classes.model_path != '' THEN -10 ELSE 0 END) +
+                (CASE WHEN classes.kind IN ('prop', 'fortification', 'structure', 'supply', 'decor') THEN -10 ELSE 0 END) +
+                (CASE WHEN classes.subkind IS NOT NULL AND classes.subkind != '' THEN -5 ELSE 0 END) +
+                (CASE WHEN classes.kind IN ('config', 'ammo', 'weapon', 'magazine') THEN 20 ELSE 0 END) +
+                (CASE WHEN classes.kind IN ('unit', 'module', 'logic') THEN 15 ELSE 0 END),
+                classes.display_name IS NULL,
+                classes.display_name,
+                classes.class_name
        LIMIT ?`
     )
     .all(...values);
@@ -421,7 +434,7 @@ export function findCatalogByDimensions(
         classes.kind,
         classes.subkind,
         classes.tags_json AS tagsJson,
-        COALESCE((SELECT json_group_array(tag) FROM class_visual_tags WHERE class_visual_tags.class_name = classes.class_name), '[]') AS visualTagsJson,
+        COALESCE((SELECT json_group_array(DISTINCT tag) FROM class_visual_tags WHERE class_visual_tags.class_name = classes.class_name), '[]') AS visualTagsJson,
         classes.source_addon AS sourceAddon,
         classes.source_mod_guess AS sourceMod,
         classes.editor_category AS editorCategory,
@@ -707,7 +720,12 @@ export function writeScanTargetProgress(catalogDb: CatalogDb, input: ScanTargetP
         END,
         rows_ingested = CASE
           WHEN scan_targets.status IN ('complete', 'failed', 'cancelled') THEN scan_targets.rows_ingested
-          WHEN ? IS NOT NULL THEN scan_targets.rows_ingested + ?
+          WHEN ? IS NOT NULL THEN
+            CASE
+              WHEN COALESCE(excluded.total_records, scan_targets.total_records) IS NOT NULL
+                THEN MIN(scan_targets.rows_ingested + ?, COALESCE(excluded.total_records, scan_targets.total_records))
+              ELSE scan_targets.rows_ingested + ?
+            END
           WHEN ? IS NOT NULL THEN ?
           ELSE scan_targets.rows_ingested
         END,
@@ -735,6 +753,7 @@ export function writeScanTargetProgress(catalogDb: CatalogDb, input: ScanTargetP
       input.finishedAt ?? null,
       input.rowsIngestedDelta ?? null,
       input.rowsIngestedDelta ?? null,
+      input.rowsIngestedDelta ?? null,
       input.rowsIngested ?? null,
       input.rowsIngested ?? null
     );
@@ -756,16 +775,22 @@ export function getScanProgress(catalogDb: CatalogDb, scanId: string): Record<st
   const targets = catalogDb.db
     .prepare(
       `SELECT
-        target,
-        target_index AS targetIndex,
-        status,
-        next_chunk_index AS nextChunkIndex,
-        total_records AS totalRecords,
-        rows_ingested AS rowsIngested,
-        error,
-        started_at AS startedAt,
-        finished_at AS finishedAt,
-        updated_at AS updatedAt
+        scan_targets.target,
+        scan_targets.target_index AS targetIndex,
+        scan_targets.status,
+        scan_targets.next_chunk_index AS nextChunkIndex,
+        scan_targets.total_records AS totalRecords,
+        scan_targets.rows_ingested AS rowsIngested,
+        COALESCE((
+          SELECT COUNT(*)
+          FROM classes
+          WHERE classes.latest_scan_id = scan_targets.scan_id
+            AND classes.config_path = scan_targets.target
+        ), 0) AS catalogRowsIngested,
+        scan_targets.error,
+        scan_targets.started_at AS startedAt,
+        scan_targets.finished_at AS finishedAt,
+        scan_targets.updated_at AS updatedAt
        FROM scan_targets
        WHERE scan_id = ?
        ORDER BY target_index, target`
@@ -787,6 +812,13 @@ export function getScanProgress(catalogDb: CatalogDb, scanId: string): Record<st
     errors,
     warnings: buildScanWarnings(String(manifest.status), targets)
   };
+}
+
+export function countCatalogClassesForScanTarget(catalogDb: CatalogDb, scanId: string, target: string): number {
+  const row = catalogDb.db
+    .prepare("SELECT COUNT(*) AS count FROM classes WHERE latest_scan_id = ? AND config_path = ?")
+    .get(scanId, target) as { count: number } | undefined;
+  return Number(row?.count ?? 0);
 }
 
 export function markScanFinished(catalogDb: CatalogDb, scanId: string, status: ScanStatus, classCounts?: Record<string, number>, error?: string): void {
@@ -1053,7 +1085,7 @@ export function updateFtsIndex(catalogDb: CatalogDb, className: string): void {
   }
 
   const visualTags = catalogDb.db
-    .prepare("SELECT tag FROM class_visual_tags WHERE class_name = ? ORDER BY tag")
+    .prepare("SELECT DISTINCT tag FROM class_visual_tags WHERE class_name = ? ORDER BY tag")
     .all(className)
     .map((tagRow) => String((tagRow as { tag: string }).tag));
 
@@ -1101,7 +1133,7 @@ export function updateFtsIndex(catalogDb: CatalogDb, className: string): void {
 
 function safeJsonArray(input: string): string[] {
   const parsed = JSON.parse(input) as unknown;
-  return Array.isArray(parsed) ? parsed.map((item) => String(item)) : [];
+  return Array.isArray(parsed) ? [...new Set(parsed.map((item) => String(item)))] : [];
 }
 
 type CatalogSearchRow = {
@@ -1152,6 +1184,10 @@ function formatCatalogClassRow(catalogDb: CatalogDb, row: Record<string, unknown
     linked_items: safeJsonArray(String(row.linked_items_json ?? "[]")),
     raw_config: JSON.parse(String(row.raw_config_json ?? "{}")) as Record<string, unknown>,
     tags: safeJsonArray(String(row.tags_json ?? "[]")),
+    visual_tags: catalogDb.db
+      .prepare("SELECT DISTINCT tag FROM class_visual_tags WHERE class_name = ? ORDER BY tag")
+      .all(String(row.class_name))
+      .map((tagRow) => String((tagRow as { tag: string }).tag)),
     class_tags: getCatalogTags(catalogDb, String(row.class_name))
   };
 }
@@ -1193,6 +1229,24 @@ function relevantSearchTargets(input: CatalogSearchInput): string[] {
     return ["CfgGroups"];
   }
   return ["CfgVehicles"];
+}
+
+function expandKindFilter(kind: string | undefined, input: CatalogSearchInput): string[] {
+  if (!kind) {
+    return [];
+  }
+  const normalized = kind.toLowerCase();
+  if (normalized !== "prop") {
+    return [kind];
+  }
+  const searchText = [input.query, ...(input.tags ?? []), ...(input.visualTags ?? [])]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  if (searchText.match(/\b(sandbag|bagfence|hbarrier|barrier|wall|bunker|fortification|cover_low|cover_high|wall_segment)\b/)) {
+    return ["prop", "fortification", "structure", "decor"];
+  }
+  return ["prop"];
 }
 
 function buildScanWarnings(status: string, targets: Record<string, unknown>[]): string[] {

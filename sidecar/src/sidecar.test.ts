@@ -144,6 +144,7 @@ describe("catalog database", () => {
         sizeOf: 4
       });
       addCatalogVisualTag(catalog, { className: "Land_Republic_Terminal_F", tag: "console", confidence: 0.8 });
+      addCatalogVisualTag(catalog, { className: "Land_Republic_Terminal_F", tag: "console", confidence: 0.6, source: "manual" });
       const screenshotId = insertClassScreenshot(catalog, {
         className: "Land_Republic_Terminal_F",
         angle: "front",
@@ -154,6 +155,9 @@ describe("catalog database", () => {
       expect(screenshotId).toBeGreaterThanOrEqual(0);
       expect(searchCatalogClasses(catalog, { visualTags: ["console"] })[0]).toMatchObject({
         class_name: "Land_Republic_Terminal_F",
+        visual_tags: ["console"]
+      });
+      expect(getCatalogClass(catalog, "Land_Republic_Terminal_F")).toMatchObject({
         visual_tags: ["console"]
       });
       expect(findCatalogByDimensions(catalog, { minWidth: 1, maxHeight: 4 })[0]).toMatchObject({
@@ -186,16 +190,25 @@ describe("catalog database", () => {
         rowsIngestedDelta: 120,
         startedAt: "2026-06-07T00:00:00.000Z"
       });
+      writeScanTargetProgress(catalog, {
+        scanId: "scan_progress",
+        target: "CfgVehicles",
+        status: "running",
+        nextChunkIndex: 3,
+        totalRecords: 125,
+        rowsIngestedDelta: 50
+      });
 
       expect(getScanProgress(catalog, "scan_progress")).toMatchObject({
         currentTarget: "CfgVehicles",
-        rowsIngested: 120
+        rowsIngested: 125
       });
       expect((getScanProgress(catalog, "scan_progress")?.targets as Record<string, unknown>[])[0]).toMatchObject({
         target: "CfgVehicles",
         targetIndex: 0,
         status: "running",
-        nextChunkIndex: 3
+        nextChunkIndex: 3,
+        catalogRowsIngested: 0
       });
       writeScanTargetProgress(catalog, {
         scanId: "scan_progress",
@@ -364,6 +377,41 @@ describe("catalog database", () => {
     }
   });
 
+  it("lets prop searches find placeable sandbag-style fortifications", () => {
+    const catalog = openCatalogDb(tempCatalogPath());
+    try {
+      ensureCatalogSchema(catalog);
+      writeScanManifest(catalog, {
+        scanId: "scan_sandbag",
+        loadedModsHash: "mods",
+        loadedAddonsHash: "addons",
+        status: "complete"
+      });
+      upsertCatalogClass(catalog, {
+        className: "Land_BagFence_Long_F",
+        latestScanId: "scan_sandbag",
+        configPath: "CfgVehicles",
+        displayName: "Sandbag Wall",
+        kind: "fortification",
+        scope: 2,
+        modelPath: "\\a3\\structures_f\\bagfence.p3d",
+        tags: ["fortification", "cover_low", "wall_segment"]
+      });
+      upsertClassTags(catalog, "Land_BagFence_Long_F", [
+        { tag: "cover_low", confidence: 0.9 },
+        { tag: "wall_segment", confidence: 0.9 }
+      ]);
+      updateFtsIndex(catalog, "Land_BagFence_Long_F");
+
+      expect(searchCatalogClasses(catalog, { query: "sandbag", kind: "prop" })[0]).toMatchObject({
+        class_name: "Land_BagFence_Long_F",
+        kind: "fortification"
+      });
+    } finally {
+      closeCatalogDb(catalog);
+    }
+  });
+
   it("normalizes modules before vehicle heuristics", () => {
     expect(
       normalizeCatalogRecord("scan_normalize", "CfgVehicles", {
@@ -385,7 +433,30 @@ describe("managed MCP discovery fallback", () => {
       "arma.camera.captureClassAngles",
       "arma.camera.createPreviewScene",
       "arma.camera.inspectClass",
+      "arma.catalog.findByDimensions",
+      "arma.catalog.findByRole",
+      "arma.catalog.findSimilar",
+      "arma.catalog.getClass",
+      "arma.catalog.getTags",
+      "arma.catalog.listCategories",
+      "arma.catalog.listFactions",
+      "arma.catalog.listMods",
+      "arma.catalog.measureClass",
+      "arma.catalog.measureMissing",
+      "arma.catalog.measureSearchResults",
+      "arma.catalog.recommend",
+      "arma.catalog.scanCancel",
+      "arma.catalog.scanFinalize",
+      "arma.catalog.scanPoll",
+      "arma.catalog.scanRepair",
+      "arma.catalog.scanStart",
+      "arma.catalog.scanStatus",
+      "arma.catalog.search",
+      "arma.catalog.status",
+      "arma.composition.exportEdenInstructions",
+      "arma.composition.exportSqf",
       "arma.composition.plan",
+      "arma.composition.previewLocal",
       "arma.eden.apply_composition",
       "arma.eden.batch",
       "arma.eden.create_entity",
@@ -401,6 +472,9 @@ describe("managed MCP discovery fallback", () => {
       "arma.eden.set_entity_transform",
       "arma.eden.validate_plan",
       "arma.terrain.sample_area",
+      "arma.visual.addTag",
+      "arma.visual.findByVisualTags",
+      "arma.visual.getScreenshots",
       "arma.visual.inspectClass",
       "arma_queue_apply_plan",
       "arma_request_editor_snapshot"
@@ -423,6 +497,16 @@ describe("sidecar state", () => {
     expect(command.type).toBe("requestSnapshot");
     expect(state.pendingCommandCount()).toBe(1);
     expect(state.drainCommands()).toHaveLength(1);
+  });
+
+  it("removes queued typed actions when they time out before Eden polls", async () => {
+    const state = createState();
+    const queued = state.queueAction({ action: "bridge.ping", mode: "read", timeoutMs: 1 });
+
+    await expect(queued.result).rejects.toThrow("Timed out waiting for Arma result for bridge.ping");
+    expect(state.pendingCommandCount()).toBe(0);
+    expect(state.pendingActionCount()).toBe(0);
+    expect(state.drainCommands()).toHaveLength(0);
   });
 
   it("stores snapshots", () => {
