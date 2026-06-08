@@ -354,6 +354,10 @@ helpers, terrain sampling, and procedural generators. Useful starting tools are:
   \item \code{arma.catalog.scanCancel}: cancel a running catalog scan.
   \item \code{arma.catalog.scanFinalize}: finish a completed bounded scan.
   \item \code{arma.catalog.scanRepair}: repair stale scan bookkeeping.
+  \item \code{arma\_visual\_inspect\_class}: discovery-friendly alias for
+        \code{arma.visual.inspectClass}.
+  \item \code{arma\_composition\_plan}: discovery-friendly alias for
+        \code{arma.composition.plan}.
   \item \code{arma\_discovery} and \code{arma\_call}: list and call an
         allowlisted fallback surface when a Codex-managed session omits
         individual tools that direct stdio exposes.
@@ -382,6 +386,10 @@ Legacy MVP aliases remain available for compatibility:
   \item If direct stdio exposes tools that Codex-managed discovery omits,
         restart/reload the Codex MCP host; use \code{arma\_discovery} and
         \code{arma\_call} as the bounded fallback while the registry is stale.
+  \item For high-level visual inspection, use \code{arma\_visual\_inspect\_class}
+        when managed discovery omits the dotted tool name.
+  \item For high-level composition planning, use \code{arma\_composition\_plan}
+        when managed discovery omits the dotted tool name.
 \end{itemize}
 
 \subsection{\code{arma\_ping} Works But Eden Is Not Connected}
