@@ -2175,7 +2175,8 @@ export function recommendCatalogRole(catalogDb: ReturnType<typeof openCatalogDb>
   const seen = new Set<string>();
   const results: Record<string, unknown>[] = [];
   for (const tag of roleTags.primary) {
-    for (const item of searchCatalogClasses(catalogDb, { tags: [tag], limit })) {
+    const searchInput = shouldUseRoleQueryRanking(role) ? { query: role, tags: [tag], limit: Math.min(limit * 4, 100) } : { tags: [tag], limit };
+    for (const item of searchCatalogClasses(catalogDb, searchInput)) {
       const className = String(item.class_name);
       if (!seen.has(className)) {
         seen.add(className);
@@ -2209,6 +2210,11 @@ export function recommendCatalogRole(catalogDb: ReturnType<typeof openCatalogDb>
     }
   }
   return results;
+}
+
+function shouldUseRoleQueryRanking(role: string): boolean {
+  const normalized = role.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return ["medical", "medic", "repair", "turret"].includes(normalized);
 }
 
 function roleToTags(role: string): { primary: string[]; broad: string[] } {

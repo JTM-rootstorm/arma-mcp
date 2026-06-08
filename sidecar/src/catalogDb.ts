@@ -245,6 +245,7 @@ function searchCatalogClassesOnce(catalogDb: CatalogDb, input: CatalogSearchInpu
     );
     values.push(tag);
   }
+  const rankExpression = searchRankExpression(input);
   values.push(limit);
 
   const rows = catalogDb.db
@@ -267,14 +268,7 @@ function searchCatalogClassesOnce(catalogDb: CatalogDb, input: CatalogSearchInpu
        LEFT JOIN class_measurements ON class_measurements.class_name = classes.class_name
        ${filters.length > 0 ? `WHERE ${filters.join(" AND ")}` : ""}
        ORDER BY
-                (CASE WHEN classes.scope >= 2 THEN -40 ELSE 0 END) +
-                (CASE WHEN classes.scope_curator >= 2 THEN -20 ELSE 0 END) +
-                (CASE WHEN classes.display_name IS NOT NULL AND classes.display_name != '' THEN -15 ELSE 0 END) +
-                (CASE WHEN classes.model_path IS NOT NULL AND classes.model_path != '' THEN -10 ELSE 0 END) +
-                (CASE WHEN classes.kind IN ('prop', 'fortification', 'structure', 'supply', 'decor') THEN -10 ELSE 0 END) +
-                (CASE WHEN classes.subkind IS NOT NULL AND classes.subkind != '' THEN -5 ELSE 0 END) +
-                (CASE WHEN classes.kind IN ('config', 'ammo', 'weapon', 'magazine') THEN 20 ELSE 0 END) +
-                (CASE WHEN classes.kind IN ('unit', 'module', 'logic') THEN 15 ELSE 0 END),
+                ${rankExpression},
                 classes.display_name IS NULL,
                 classes.display_name,
                 classes.class_name
@@ -282,6 +276,73 @@ function searchCatalogClassesOnce(catalogDb: CatalogDb, input: CatalogSearchInpu
     )
     .all(...values);
   return rows.map((row) => formatCatalogSearchRow(row as CatalogSearchRow));
+}
+
+function searchRankExpression(input: CatalogSearchInput): string {
+  const query = input.query?.trim().toLowerCase() ?? "";
+  const clauses = [
+    "(CASE WHEN classes.scope >= 2 THEN -40 ELSE 0 END)",
+    "(CASE WHEN classes.scope_curator >= 2 THEN -20 ELSE 0 END)",
+    "(CASE WHEN classes.display_name IS NOT NULL AND classes.display_name != '' THEN -15 ELSE 0 END)",
+    "(CASE WHEN classes.model_path IS NOT NULL AND classes.model_path != '' THEN -10 ELSE 0 END)",
+    "(CASE WHEN classes.kind IN ('prop', 'fortification', 'structure', 'supply', 'decor') THEN -10 ELSE 0 END)",
+    "(CASE WHEN classes.subkind IS NOT NULL AND classes.subkind != '' THEN -5 ELSE 0 END)",
+    "(CASE WHEN classes.kind IN ('config', 'ammo', 'weapon', 'magazine') THEN 20 ELSE 0 END)",
+    "(CASE WHEN classes.kind IN ('unit', 'module', 'logic') THEN 15 ELSE 0 END)"
+  ];
+  if (isVehicleSearchQuery(query)) {
+    clauses.push(
+      "(CASE WHEN classes.kind = 'vehicle' THEN -45 ELSE 0 END)",
+      "(CASE WHEN LOWER(COALESCE(classes.simulation, '')) IN ('helicopterrtd', 'helicopter', 'airplanex', 'airplane', 'planex') THEN -45 ELSE 0 END)",
+      "(CASE WHEN LOWER(COALESCE(classes.vehicle_class, '')) IN ('air', 'helicopter', 'plane') THEN -25 ELSE 0 END)",
+      "(CASE WHEN LOWER(COALESCE(classes.editor_subcategory, '')) LIKE '%helicopter%' OR LOWER(COALESCE(classes.editor_subcategory, '')) LIKE '%plane%' THEN -15 ELSE 0 END)",
+      "(CASE WHEN LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '') || ' ' || COALESCE(classes.model_path, '') || ' ' || COALESCE(classes.editor_subcategory, '')) LIKE '%wreck%' THEN 60 ELSE 0 END)",
+      "(CASE WHEN LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '')) LIKE '%door%' THEN 35 ELSE 0 END)",
+      "(CASE WHEN LOWER(COALESCE(classes.simulation, '')) IN ('house', 'thing', 'thingx') AND LOWER(COALESCE(classes.vehicle_class, '')) LIKE '%structure%' THEN 25 ELSE 0 END)"
+    );
+  }
+  if (isMedicalSearchQuery(query)) {
+    clauses.push(
+      "(CASE WHEN LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '') || ' ' || COALESCE(classes.editor_subcategory, '')) LIKE '%bacta%' OR LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '') || ' ' || COALESCE(classes.editor_subcategory, '')) LIKE '%bed%' OR LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '') || ' ' || COALESCE(classes.editor_subcategory, '')) LIKE '%stretcher%' OR LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '') || ' ' || COALESCE(classes.editor_subcategory, '')) LIKE '%scanner%' OR LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '') || ' ' || COALESCE(classes.editor_subcategory, '')) LIKE '%medbay%' OR LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '') || ' ' || COALESCE(classes.editor_subcategory, '')) LIKE '%hospital%' THEN -45 ELSE 0 END)",
+      "(CASE WHEN EXISTS (SELECT 1 FROM class_tags WHERE class_tags.class_name = classes.class_name AND class_tags.tag = 'medical') THEN -70 ELSE 0 END)",
+      "(CASE WHEN EXISTS (SELECT 1 FROM class_tags WHERE class_tags.class_name = classes.class_name AND class_tags.tag = 'medical_crate') THEN -55 ELSE 0 END)",
+      "(CASE WHEN classes.subkind = 'terminal' OR LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '')) LIKE '%terminal%' THEN 35 ELSE 0 END)",
+      "(CASE WHEN LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '')) LIKE '%case%' OR LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '')) LIKE '%box%' OR LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '')) LIKE '%crate%' THEN 20 ELSE 0 END)"
+    );
+  }
+  if (isTurretSearchQuery(query)) {
+    clauses.push(
+      "(CASE WHEN EXISTS (SELECT 1 FROM class_tags WHERE class_tags.class_name = classes.class_name AND class_tags.tag = 'static_weapon') THEN -45 ELSE 0 END)",
+      "(CASE WHEN LOWER(COALESCE(classes.editor_subcategory, '')) LIKE '%turret%' THEN -35 ELSE 0 END)",
+      "(CASE WHEN LOWER(COALESCE(classes.display_name, '')) LIKE '%turret%' OR LOWER(COALESCE(classes.display_name, '')) LIKE '%cannon%' OR LOWER(COALESCE(classes.display_name, '')) LIKE '%gun%' OR LOWER(COALESCE(classes.display_name, '')) LIKE '%mortar%' THEN -25 ELSE 0 END)",
+      "(CASE WHEN LOWER(COALESCE(classes.editor_subcategory, '')) NOT LIKE '%turret%' AND LOWER(COALESCE(classes.display_name, '')) NOT LIKE '%turret%' AND LOWER(COALESCE(classes.display_name, '')) NOT LIKE '%cannon%' AND LOWER(COALESCE(classes.display_name, '')) NOT LIKE '%gun%' AND LOWER(COALESCE(classes.display_name, '')) NOT LIKE '%mortar%' THEN 40 ELSE 0 END)"
+    );
+  }
+  if (isRepairSearchQuery(query)) {
+    clauses.push(
+      "(CASE WHEN EXISTS (SELECT 1 FROM class_tags WHERE class_tags.class_name = classes.class_name AND class_tags.tag = 'repair') THEN -35 ELSE 0 END)",
+      "(CASE WHEN LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '') || ' ' || COALESCE(classes.editor_subcategory, '')) LIKE '%repair container%' OR LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '') || ' ' || COALESCE(classes.editor_subcategory, '')) LIKE '%repair truck%' OR LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '') || ' ' || COALESCE(classes.editor_subcategory, '')) LIKE '%repair depot%' OR LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '') || ' ' || COALESCE(classes.editor_subcategory, '')) LIKE '%repair station%' OR LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '') || ' ' || COALESCE(classes.editor_subcategory, '')) LIKE '%service%' THEN -45 ELSE 0 END)",
+      "(CASE WHEN LOWER(COALESCE(classes.editor_subcategory, '')) LIKE '%storage%' THEN -10 ELSE 0 END)",
+      "(CASE WHEN LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '') || ' ' || COALESCE(classes.editor_subcategory, '')) LIKE '%billboard%' OR LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '') || ' ' || COALESCE(classes.editor_subcategory, '')) LIKE '%sign%' OR LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '') || ' ' || COALESCE(classes.editor_subcategory, '')) LIKE '%decal%' OR LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '') || ' ' || COALESCE(classes.editor_subcategory, '')) LIKE '%tunnel%' OR LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '') || ' ' || COALESCE(classes.editor_subcategory, '')) LIKE '%carrier%' OR LOWER(COALESCE(classes.class_name, '') || ' ' || COALESCE(classes.display_name, '') || ' ' || COALESCE(classes.editor_subcategory, '')) LIKE '%hull%' THEN 35 ELSE 0 END)"
+    );
+  }
+  return clauses.join(" + ");
+}
+
+function isVehicleSearchQuery(query: string): boolean {
+  return Boolean(query.match(/\b(laat|gunship|helicopter|heli|aircraft|fighter|transport|dropship|tank|apc|ifv|truck|car|ship|uav|speeder)\b/));
+}
+
+function isMedicalSearchQuery(query: string): boolean {
+  return Boolean(query.match(/\b(medical|medic|medevac|first aid|stretcher|healer|heal)\b/));
+}
+
+function isTurretSearchQuery(query: string): boolean {
+  return Boolean(query.match(/\b(turret|static weapon|mortar|hmg|gmg|cannon)\b/));
+}
+
+function isRepairSearchQuery(query: string): boolean {
+  return Boolean(query.match(/\b(repair|maintenance|service)\b/));
 }
 
 function isObjectAssetQuery(query: string | undefined): boolean {

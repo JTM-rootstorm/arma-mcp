@@ -142,6 +142,7 @@ export function normalizeCatalogRecord(
     simulation: stringField(record.simulation),
     editorCategory: stringField(record.editor_category ?? record.editorCategory),
     editorSubcategory: stringField(record.editor_subcategory ?? record.editorSubcategory),
+    vehicleClass: stringField(record.vehicle_class ?? record.vehicleClass),
     faction: stringField(record.faction)
   });
 
@@ -219,11 +220,26 @@ function categorizeClass(input: {
   }
   const parentClasses = rawArray(input.rawConfig?.parents).join(" ").toLowerCase();
   const inheritance = `${haystack} ${parentClasses}`;
+  const simulation = (input.simulation ?? "").toLowerCase();
+  const vehicleClass = (input.vehicleClass ?? "").toLowerCase();
+  const editorCategory = (input.editorCategory ?? "").toLowerCase();
+  const editorSubcategory = (input.editorSubcategory ?? "").toLowerCase();
 
-  if (input.configPath === "CfgVehicles" && inheritance.match(/\b(module_f|logic|modulecurator|module)\b/)) {
-    return { kind: inheritance.includes("logic") && !inheritance.includes("module") ? "logic" : "module", subkind: moduleSubkind(haystack), confidence: 0.9, source: "inheritance" };
+  if (input.configPath === "CfgVehicles" && hasVehicleSignal(simulation, vehicleClass, editorSubcategory, parentClasses)) {
+    return { kind: "vehicle", subkind: null, confidence: 0.9, source: "vehicle_signal" };
   }
-  if (input.className.match(/^Module/i) || haystack.match(/\b(module|logic|modules|eden modules|zeus|curator)\b/)) {
+
+  const hasModuleSignal =
+    input.configPath === "CfgVehicles" &&
+    (input.className.match(/^Module/i) ||
+      simulation === "logic" ||
+      parentClasses.match(/\b(module_f|logic|modulecurator)\b/) ||
+      editorCategory.match(/\b(edcat_modules|modules|curator)\b/) ||
+      editorSubcategory.match(/\b(edsubcat_module|modules|curator)\b/));
+  if (hasModuleSignal) {
+    return { kind: parentClasses.includes("logic") && !parentClasses.includes("module") ? "logic" : "module", subkind: moduleSubkind(haystack), confidence: 0.9, source: "module_signal" };
+  }
+  if (input.className.match(/^Module/i)) {
     return { kind: haystack.includes("logic") && !haystack.includes("module") ? "logic" : "module", subkind: moduleSubkind(haystack), confidence: 0.85, source: "heuristic" };
   }
   if (haystack.match(/\b(man|soldier|crew|pilot|unit)\b/)) {
@@ -241,10 +257,35 @@ function categorizeClass(input: {
   if (haystack.match(/\b(crate|box|supply|ammo)\b/)) {
     return { kind: "supply", subkind: null, confidence: 0.7, source: "heuristic" };
   }
+  if (input.configPath === "CfgVehicles" && hasStructureSignal(simulation, vehicleClass, editorCategory, editorSubcategory)) {
+    return { kind: "structure", subkind: null, confidence: 0.65, source: "structure_signal" };
+  }
   if (input.configPath === "CfgVehicles") {
     return { kind: "prop", subkind: null, confidence: 0.45, source: "config_path" };
   }
   return { kind: "config", subkind: null, confidence: 0.25, source: "fallback" };
+}
+
+function hasVehicleSignal(simulation: string, vehicleClass: string, editorSubcategory: string, parentClasses: string): boolean {
+  if (simulation.match(/\b(helicopterrtd|helicopter|airplanex|airplane|planex|carx|tankx|shipx|submarinex|uav|wheeled|tracked)\b/)) {
+    return true;
+  }
+  if (vehicleClass.match(/\b(air|helicopter|plane|car|armored|armour|tank|ship|submarine|uav|autonomous|wheeled|tracked)\b/)) {
+    return true;
+  }
+  if (editorSubcategory.match(/\b(helicopters|planes|cars|tanks|apcs|ships|submarines|uavs)\b/)) {
+    return true;
+  }
+  return Boolean(parentClasses.match(/\b(helicopter_base_h|plane_base_f|car_f|tank_f|ship_f|submarine_f)\b/));
+}
+
+function hasStructureSignal(simulation: string, vehicleClass: string, editorCategory: string, editorSubcategory: string): boolean {
+  return Boolean(
+    simulation.match(/\b(house|thing|thingx|building)\b/) ||
+      vehicleClass.match(/\b(structure|structures|building|buildings|fortification)\b/) ||
+      editorCategory.match(/\b(structure|structures|object|props|ship|basedship)\b/) ||
+      editorSubcategory.match(/\b(structure|structures|building|buildings|cruisers|wrecks)\b/)
+  );
 }
 
 function generateClassTags(input: {
@@ -256,6 +297,7 @@ function generateClassTags(input: {
   simulation?: string;
   editorCategory?: string;
   editorSubcategory?: string;
+  vehicleClass?: string;
   faction?: string;
 }): string[] {
   const tags = new Set<string>([input.kind]);
@@ -269,6 +311,7 @@ function generateClassTags(input: {
     input.simulation,
     input.editorCategory,
     input.editorSubcategory,
+    input.vehicleClass,
     input.faction
   ]
     .filter(Boolean)
@@ -300,15 +343,24 @@ function generateClassTags(input: {
     ["medical_crate", /\b(medical|medic|first aid|heal).*\b(crate|box|supply)\b|\b(crate|box).*\b(medical|medic|first aid|heal)\b/],
     ["repair", /\b(repair|maintenance|service)\b/],
     ["vehicle_spawn", /\b(vehicle spawn|garage|respawn vehicle|spawn point)\b/],
-    ["module_task", /\b(task|objective).*\b(module|logic)\b|\bmodule.*\b(task|objective)\b/],
-    ["module_respawn", /\b(respawn|spawn).*\b(module|logic)\b|\bmodule.*\b(respawn|spawn)\b/],
-    ["module_zeus", /\b(zeus|curator).*\b(module|logic)\b|\bmodule.*\b(zeus|curator)\b/],
+    ["wreck", /\b(wreck|wrecked|staticwreck)\b/],
     ["light_source", /\b(light|lamp|reflector|floodlight)\b/],
     ["decor_clutter", /\b(decor|chair|table|trash|clutter|sign|file|barrel)\b/],
     ["decor", /\b(decor|chair|table|crate|sign)\b/]
   ] as const) {
     if (pattern.test(haystack)) {
       tags.add(tag);
+    }
+  }
+  if (input.kind === "module" || input.kind === "logic") {
+    for (const [tag, pattern] of [
+      ["module_task", /\b(task|objective)\b.*\b(module|logic)\b|\bmodule\b.*\b(task|objective)\b/],
+      ["module_respawn", /\b(respawn|spawn)\b.*\b(module|logic)\b|\bmodule\b.*\b(respawn|spawn)\b/],
+      ["module_zeus", /\b(zeus|curator)\b.*\b(module|logic)\b|\bmodule\b.*\b(zeus|curator)\b/]
+    ] as const) {
+      if (pattern.test(haystack)) {
+        tags.add(tag);
+      }
     }
   }
   return [...tags].sort();

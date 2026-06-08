@@ -461,6 +461,38 @@ describe("catalog database", () => {
     }
   });
 
+  it("uses simulation and editor signals to classify flyable LAATs as vehicles", () => {
+    const flyable = normalizeCatalogRecord("scan_laat_vehicle", "CfgVehicles", {
+      className: "442_laat_2",
+      displayName: "LAAT/I Gunship",
+      scope: 2,
+      simulation: "helicopterrtd",
+      vehicleClass: "Air",
+      editorSubcategory: "EdSubcat_Helicopters",
+      modelPath: "kobra\\442_a_vehicle\\laat\\Laat.p3d",
+      parents: ["Helicopter_Base_H"]
+    });
+    expect(flyable?.catalogClass).toMatchObject({
+      className: "442_laat_2",
+      kind: "vehicle",
+      categorizationSource: "vehicle_signal"
+    });
+    expect(flyable?.tags).toContain("vehicle_air");
+
+    const cruiser = normalizeCatalogRecord("scan_cruiser", "CfgVehicles", {
+      className: "MTCcombat",
+      displayName: "Modular Taskforce Cruiser [Combat Module]",
+      scope: 2,
+      simulation: "house",
+      vehicleClass: "Structures_Town",
+      editorCategory: "basedship",
+      editorSubcategory: "EdSubCat_HeavyCruisers",
+      modelPath: "victoryIISD\\MTCcombat.p3d"
+    });
+    expect(cruiser?.catalogClass.kind).toBe("structure");
+    expect(cruiser?.tags).not.toContain("module_task");
+  });
+
   it("keeps package rows out of default cached asset search results", () => {
     const catalog = openCatalogDb(tempCatalogPath());
     try {
@@ -485,6 +517,79 @@ describe("catalog database", () => {
       expect(searchCatalogClasses(catalog, { query: "LAAT", kind: "config" })[0]).toMatchObject({
         class_name: "3AS_LAAT"
       });
+    } finally {
+      closeCatalogDb(catalog);
+    }
+  });
+
+  it("ranks flyable LAAT variants above wrecks and doors", () => {
+    const catalog = openCatalogDb(tempCatalogPath());
+    try {
+      ensureCatalogSchema(catalog);
+      writeScanManifest(catalog, {
+        scanId: "scan_laat_rank",
+        loadedModsHash: "mods",
+        loadedAddonsHash: "addons",
+        status: "complete"
+      });
+      for (const item of [
+        {
+          className: "3AS_LAAT_Mk1_StaticWreck",
+          displayName: "LAAT/I Mk1 (Wrecked)",
+          kind: "structure",
+          simulation: "house",
+          vehicleClass: "Structures_Town",
+          editorSubcategory: "3AS_EditorSubcategory_Wrecks",
+          modelPath: "3as\\3AS_laat\\LAATi\\model\\TCW_LAAT_wreck.p3d",
+          tags: ["structure", "wreck", "vehicle_air"]
+        },
+        {
+          className: "3AS_LAAT_Door_Left",
+          displayName: "LAAT/I Door Left",
+          kind: "structure",
+          simulation: "house",
+          vehicleClass: "Structures_Town",
+          editorSubcategory: "3AS_EditorSubcategory_Props",
+          modelPath: "3as\\3AS_laat\\LAATi\\model\\TCW_LAAT_door.p3d",
+          tags: ["structure", "vehicle_air"]
+        },
+        {
+          className: "442_laat_2",
+          displayName: "LAAT/I Gunship",
+          kind: "vehicle",
+          simulation: "helicopterrtd",
+          vehicleClass: "Air",
+          editorSubcategory: "EdSubcat_Helicopters",
+          modelPath: "kobra\\442_a_vehicle\\laat\\Laat.p3d",
+          tags: ["vehicle", "republic", "vehicle_air"]
+        }
+      ]) {
+        upsertCatalogClass(catalog, {
+          className: item.className,
+          latestScanId: "scan_laat_rank",
+          configPath: "CfgVehicles",
+          displayName: item.displayName,
+          kind: item.kind,
+          simulation: item.simulation,
+          vehicleClass: item.vehicleClass,
+          editorSubcategory: item.editorSubcategory,
+          modelPath: item.modelPath,
+          scope: 2,
+          tags: item.tags
+        });
+        upsertClassTags(
+          catalog,
+          item.className,
+          item.tags.map((tag) => ({ tag, confidence: 0.9 }))
+        );
+        updateFtsIndex(catalog, item.className);
+      }
+
+      expect(searchCatalogClasses(catalog, { query: "LAAT" }).map((item) => item.class_name)).toEqual([
+        "442_laat_2",
+        "3AS_LAAT_Door_Left",
+        "3AS_LAAT_Mk1_StaticWreck"
+      ]);
     } finally {
       closeCatalogDb(catalog);
     }
@@ -535,6 +640,8 @@ describe("catalog database", () => {
       });
       for (const item of [
         { className: "Box_Ammo_F", displayName: "Ammo Supply Box", tags: ["supply", "ammo_crate"] },
+        { className: "Box_B_UAV_06_medical_F", displayName: "AL-6 Case (Medical) [NATO]", tags: ["prop", "medical", "medical_crate"] },
+        { className: "Land_Medical_Terminal_F", displayName: "Medical Terminal Case", tags: ["prop", "terminal"], subkind: "terminal" },
         { className: "3AS_Medical_Bed", displayName: "Medical Bed", tags: ["prop", "medical"] }
       ]) {
         upsertCatalogClass(catalog, {
@@ -543,6 +650,7 @@ describe("catalog database", () => {
           configPath: "CfgVehicles",
           displayName: item.displayName,
           kind: "prop",
+          subkind: item.subkind,
           modelPath: "\\a3\\props_f\\placeholder.p3d",
           scope: 2,
           tags: item.tags
@@ -557,7 +665,10 @@ describe("catalog database", () => {
 
       expect(recommendCatalogRole(catalog, "medical", 5)[0]).toMatchObject({
         class_name: "3AS_Medical_Bed",
-        matched_role: "medical"
+          matched_role: "medical"
+        });
+      expect(searchCatalogClasses(catalog, { query: "medical" })[0]).toMatchObject({
+        class_name: "3AS_Medical_Bed"
       });
     } finally {
       closeCatalogDb(catalog);
@@ -599,6 +710,76 @@ describe("catalog database", () => {
       expect(searchCatalogClasses(catalog, { query: "repair" }).map((item) => item.class_name)).toEqual(["B_AssaultPack_rgr_Repair"]);
       expect(searchCatalogClasses(catalog, { query: "repair", kind: "unit" })[0]).toMatchObject({
         class_name: "B_soldier_repair_F"
+      });
+    } finally {
+      closeCatalogDb(catalog);
+    }
+  });
+
+  it("ranks useful turret and repair assets above decorative text matches", () => {
+    const catalog = openCatalogDb(tempCatalogPath());
+    try {
+      ensureCatalogSchema(catalog);
+      writeScanManifest(catalog, {
+        scanId: "scan_rank_polish",
+        loadedModsHash: "mods",
+        loadedAddonsHash: "addons",
+        status: "complete"
+      });
+      for (const item of [
+        {
+          className: "lsb_BactaTank_Turret",
+          displayName: "Bacta Tank",
+          kind: "vehicle",
+          editorSubcategory: "lsb_bacta",
+          tags: ["vehicle"]
+        },
+        {
+          className: "3AS_BlasterTurret",
+          displayName: "Blaster Turret",
+          kind: "vehicle",
+          editorSubcategory: "EdSubcat_Turrets",
+          tags: ["vehicle", "static_weapon"]
+        },
+        {
+          className: "Land_AttachedSign_02_v1_F",
+          displayName: "Billboard 6 (Phone Repair)",
+          kind: "prop",
+          editorSubcategory: "EdSubcat_Services",
+          tags: ["prop", "repair"]
+        },
+        {
+          className: "B_Slingload_01_Repair_F",
+          displayName: "Huron Repair Container",
+          kind: "prop",
+          editorSubcategory: "EdSubcat_Storage",
+          tags: ["prop", "repair"]
+        }
+      ]) {
+        upsertCatalogClass(catalog, {
+          className: item.className,
+          latestScanId: "scan_rank_polish",
+          configPath: "CfgVehicles",
+          displayName: item.displayName,
+          kind: item.kind,
+          editorSubcategory: item.editorSubcategory,
+          modelPath: "\\a3\\props_f\\placeholder.p3d",
+          scope: 2,
+          tags: item.tags
+        });
+        upsertClassTags(
+          catalog,
+          item.className,
+          item.tags.map((tag) => ({ tag, confidence: 0.9 }))
+        );
+        updateFtsIndex(catalog, item.className);
+      }
+
+      expect(searchCatalogClasses(catalog, { query: "turret" })[0]).toMatchObject({
+        class_name: "3AS_BlasterTurret"
+      });
+      expect(searchCatalogClasses(catalog, { query: "repair" })[0]).toMatchObject({
+        class_name: "B_Slingload_01_Repair_F"
       });
     } finally {
       closeCatalogDb(catalog);
