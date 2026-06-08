@@ -32,6 +32,13 @@ export function shouldSkipHttpListen(argv = process.argv, env = process.env): bo
   return argv.includes("--stdio-only-existing-bridge") || truthyEnv(env.ARMA_MCP_SKIP_HTTP_LISTEN);
 }
 
+export function isRecoverableListenError(error: unknown): boolean {
+  const record = error && typeof error === "object" ? (error as { code?: unknown; message?: unknown }) : {};
+  const code = typeof record.code === "string" ? record.code : "";
+  const message = typeof record.message === "string" ? record.message : String(error);
+  return code === "EADDRINUSE" || code === "EPERM" || /listen EADDRINUSE|listen EPERM/i.test(message);
+}
+
 export async function startHttpBridge(
   state: ArmaMcpState,
   logger: Logger,

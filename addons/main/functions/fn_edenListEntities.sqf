@@ -24,7 +24,7 @@ private _snapshotOptions = createHashMapFromArray [
     ["includeModel", _includeModel]
 ];
 
-for "_index" from 0 to ((count _all) - 1) do {
+for "_index" from 0 to (((count _all) min (count _typeNames)) - 1) do {
     private _entityType = _typeNames param [_index, format ["Type%1", _index]];
     private _typeAllowed = (count _types) isEqualTo 0 || {_entityType in _types};
     if (_typeAllowed) then {

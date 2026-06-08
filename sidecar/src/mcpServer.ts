@@ -410,14 +410,28 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig)
       inputSchema: emptyInputSchema.shape
     },
     async () => {
-      const lastSeenAt = await state.getLastEdenSeenAt();
+      const status = await readBridgeStatus(state);
+      if (!status.ok) {
+        return jsonToolResult({
+          sidecarConnected: true,
+          bridgeReachable: false,
+          armaConnected: false,
+          edenAvailable: false,
+          pendingActions: null,
+          pendingResults: null,
+          lastSeenAt: null,
+          httpBridge: { host: bridgeConfig.host, port: bridgeConfig.port },
+          error: status.error
+        });
+      }
       return jsonToolResult({
         sidecarConnected: true,
-        armaConnected: lastSeenAt !== null,
-        edenAvailable: lastSeenAt !== null,
-        pendingActions: await state.pendingCommandCount(),
-        pendingResults: await state.pendingActionCount(),
-        lastSeenAt,
+        bridgeReachable: true,
+        armaConnected: status.lastSeenAt !== null,
+        edenAvailable: status.lastSeenAt !== null,
+        pendingActions: status.pendingCommandCount,
+        pendingResults: status.pendingActionCount,
+        lastSeenAt: status.lastSeenAt,
         httpBridge: { host: bridgeConfig.host, port: bridgeConfig.port }
       });
     }
@@ -614,17 +628,31 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig)
       inputSchema: {}
     },
     async () => {
-      const lastSeenAt = await state.getLastEdenSeenAt();
-      const lastSnapshot = await state.getLastSnapshot();
+      const status = await readBridgeStatus(state);
+      if (!status.ok) {
+        return jsonToolResult({
+          sidecar: "ok",
+          httpBridge: { host: bridgeConfig.host, port: bridgeConfig.port },
+          bridgeReachable: false,
+          eden: {
+            connected: false,
+            lastSeenAt: null
+          },
+          lastSnapshotAt: null,
+          pendingCommandCount: null,
+          error: status.error
+        });
+      }
       return jsonToolResult({
         sidecar: "ok",
         httpBridge: { host: bridgeConfig.host, port: bridgeConfig.port },
+        bridgeReachable: true,
         eden: {
-          connected: lastSeenAt !== null,
-          lastSeenAt
+          connected: status.lastSeenAt !== null,
+          lastSeenAt: status.lastSeenAt
         },
-        lastSnapshotAt: lastSnapshot?.createdAt ?? null,
-        pendingCommandCount: await state.pendingCommandCount()
+        lastSnapshotAt: status.lastSnapshotAt,
+        pendingCommandCount: status.pendingCommandCount
       });
     }
   );
@@ -1944,13 +1972,72 @@ function exportEdenInstructions(plan: Record<string, unknown>): string[] {
 }
 
 async function withCatalogDb<T>(callback: (catalogDb: ReturnType<typeof openCatalogDb>) => T | Promise<T>): Promise<T> {
-  const catalogDb = openCatalogDb();
-  try {
-    ensureCatalogSchema(catalogDb);
-    return await callback(catalogDb);
-  } finally {
-    closeCatalogDb(catalogDb);
+  const maxAttempts = catalogDbRetryAttempts();
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const catalogDb = openCatalogDb();
+    try {
+      ensureCatalogSchema(catalogDb);
+      return await callback(catalogDb);
+    } catch (error) {
+      lastError = error;
+      if (!isDatabaseLockedError(error) || attempt >= maxAttempts) {
+        throw error;
+      }
+      await sleep(catalogDbRetryDelayMs(attempt));
+    } finally {
+      closeCatalogDb(catalogDb);
+    }
   }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+async function readBridgeStatus(state: ArmaMcpState): Promise<
+  | {
+      ok: true;
+      lastSeenAt: string | null;
+      lastSnapshotAt: string | null;
+      pendingCommandCount: number;
+      pendingActionCount: number;
+    }
+  | { ok: false; error: string }
+> {
+  try {
+    const lastSeenAt = await state.getLastEdenSeenAt();
+    const lastSnapshot = await state.getLastSnapshot();
+    return {
+      ok: true,
+      lastSeenAt,
+      lastSnapshotAt: lastSnapshot?.createdAt ?? null,
+      pendingCommandCount: await state.pendingCommandCount(),
+      pendingActionCount: await state.pendingActionCount()
+    };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function catalogDbRetryAttempts(): number {
+  const parsed = Number(process.env.ARMA_MCP_CATALOG_BUSY_RETRIES ?? 5);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return 5;
+  }
+  return Math.min(Math.trunc(parsed), 20);
+}
+
+function catalogDbRetryDelayMs(attempt: number): number {
+  const base = Number(process.env.ARMA_MCP_CATALOG_BUSY_RETRY_DELAY_MS ?? 75);
+  const normalizedBase = Number.isFinite(base) && base >= 0 ? Math.min(Math.trunc(base), 5_000) : 75;
+  return normalizedBase * attempt;
+}
+
+function isDatabaseLockedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /database is locked|SQLITE_BUSY|SQLITE_LOCKED/i.test(message);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function dispatchCatalogAction(

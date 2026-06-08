@@ -99,9 +99,18 @@ export function openCatalogDb(dbPath = DEFAULT_CATALOG_DB_PATH): CatalogDb {
   mkdirSync(dirname(resolvedPath), { recursive: true });
   const db = new DatabaseSync(resolvedPath);
   db.exec("PRAGMA foreign_keys = ON;");
+  db.exec(`PRAGMA busy_timeout = ${catalogBusyTimeoutMs()};`);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA synchronous = NORMAL;");
   return { db, path: resolvedPath };
+}
+
+function catalogBusyTimeoutMs(): number {
+  const parsed = Number(process.env.ARMA_MCP_CATALOG_BUSY_TIMEOUT_MS ?? 10_000);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return 10_000;
+  }
+  return Math.min(Math.trunc(parsed), 120_000);
 }
 
 export function getCatalogStatus(catalogDb: CatalogDb): Record<string, unknown> {
@@ -657,6 +666,7 @@ export function initializeScanTargets(catalogDb: CatalogDb, scanId: string, targ
 }
 
 export function writeScanTargetProgress(catalogDb: CatalogDb, input: ScanTargetProgressInput): void {
+  const existingIndex = input.targetIndex ?? getScanTargetIndex(catalogDb, input.scanId, input.target);
   catalogDb.db
     .prepare(
       `INSERT INTO scan_targets (
@@ -674,7 +684,12 @@ export function writeScanTargetProgress(catalogDb: CatalogDb, input: ScanTargetP
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
       ON CONFLICT(scan_id, target) DO UPDATE SET
         target_index = COALESCE(excluded.target_index, scan_targets.target_index),
-        status = COALESCE(excluded.status, scan_targets.status),
+        status = CASE
+          WHEN scan_targets.status IN ('complete', 'failed', 'cancelled')
+            AND COALESCE(excluded.status, scan_targets.status) NOT IN ('failed', 'cancelled')
+            THEN scan_targets.status
+          ELSE COALESCE(excluded.status, scan_targets.status)
+        END,
         next_chunk_index = COALESCE(excluded.next_chunk_index, scan_targets.next_chunk_index),
         total_records = COALESCE(excluded.total_records, scan_targets.total_records),
         rows_ingested = CASE
@@ -690,7 +705,7 @@ export function writeScanTargetProgress(catalogDb: CatalogDb, input: ScanTargetP
     .run(
       input.scanId,
       input.target,
-      input.targetIndex ?? 0,
+      existingIndex ?? 0,
       input.status ?? "pending",
       input.nextChunkIndex ?? 0,
       input.totalRecords ?? null,
@@ -703,6 +718,13 @@ export function writeScanTargetProgress(catalogDb: CatalogDb, input: ScanTargetP
       input.rowsIngested ?? null,
       input.rowsIngested ?? null
     );
+}
+
+function getScanTargetIndex(catalogDb: CatalogDb, scanId: string, target: string): number | null {
+  const row = catalogDb.db
+    .prepare("SELECT target_index AS targetIndex FROM scan_targets WHERE scan_id = ? AND target = ?")
+    .get(scanId, target) as { targetIndex: number } | undefined;
+  return typeof row?.targetIndex === "number" ? row.targetIndex : null;
 }
 
 export function getScanProgress(catalogDb: CatalogDb, scanId: string): Record<string, unknown> | null {
@@ -773,7 +795,7 @@ export function markScanFinished(catalogDb: CatalogDb, scanId: string, status: S
       .prepare(
         `UPDATE scan_targets
          SET status = 'cancelled', finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
-         WHERE scan_id = ? AND status IN ('pending', 'running')`
+         WHERE scan_id = ? AND status IN ('pending', 'running', 'partial')`
       )
       .run(scanId);
   } else if (status === "failed") {

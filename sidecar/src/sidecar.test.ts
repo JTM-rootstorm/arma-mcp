@@ -18,6 +18,7 @@ import {
   listCatalogCategories,
   listCatalogFactions,
   listClassesMissingMeasurements,
+  markScanFinished,
   markStaleScans,
   openCatalogDb,
   repairStaleScan,
@@ -30,7 +31,7 @@ import {
   writeScanManifest
 } from "./catalogDb.js";
 import { generateAaSite, generateCoverLine, generateLz, generatePropWall, generateRoadCheckpoint, generateSmallOutpost } from "./generators.js";
-import { shouldSkipHttpListen, startHttpBridge, type StartedBridge } from "./httpBridge.js";
+import { isRecoverableListenError, shouldSkipHttpListen, startHttpBridge, type StartedBridge } from "./httpBridge.js";
 import { logger } from "./log.js";
 import { createRemoteBridgeState } from "./remoteBridgeState.js";
 import { compositionPlanSchema } from "./schema.js";
@@ -191,8 +192,21 @@ describe("catalog database", () => {
       });
       expect((getScanProgress(catalog, "scan_progress")?.targets as Record<string, unknown>[])[0]).toMatchObject({
         target: "CfgVehicles",
+        targetIndex: 0,
         status: "running",
         nextChunkIndex: 3
+      });
+      writeScanTargetProgress(catalog, {
+        scanId: "scan_progress",
+        target: "CfgWeapons",
+        status: "running",
+        nextChunkIndex: 1
+      });
+      expect((getScanProgress(catalog, "scan_progress")?.targets as Record<string, unknown>[])[1]).toMatchObject({
+        target: "CfgWeapons",
+        targetIndex: 1,
+        status: "running",
+        nextChunkIndex: 1
       });
       const diagnostics = getCatalogSearchDiagnostics(catalog, { query: "console", kind: "prop" }, 0);
       expect(diagnostics).toMatchObject({
@@ -204,6 +218,45 @@ describe("catalog database", () => {
       const repaired = repairStaleScan(catalog, "scan_progress");
       expect(repaired).toMatchObject({ ok: true });
       expect(getScanProgress(catalog, "scan_progress")?.manifest).toMatchObject({ status: "partial" });
+    } finally {
+      closeCatalogDb(catalog);
+    }
+  });
+
+  it("keeps cancelled scan target status sticky after late progress writes", () => {
+    const catalog = openCatalogDb(tempCatalogPath());
+    try {
+      ensureCatalogSchema(catalog);
+      writeScanManifest(catalog, {
+        scanId: "scan_cancel",
+        loadedModsHash: "mods",
+        loadedAddonsHash: "addons",
+        status: "running"
+      });
+      initializeScanTargets(catalog, "scan_cancel", ["CfgPatches", "CfgVehicles"]);
+      writeScanTargetProgress(catalog, {
+        scanId: "scan_cancel",
+        target: "CfgVehicles",
+        status: "running",
+        nextChunkIndex: 10,
+        rowsIngestedDelta: 50
+      });
+      markScanFinished(catalog, "scan_cancel", "cancelled");
+      writeScanTargetProgress(catalog, {
+        scanId: "scan_cancel",
+        target: "CfgVehicles",
+        status: "running",
+        nextChunkIndex: 11,
+        rowsIngestedDelta: 5
+      });
+
+      expect((getScanProgress(catalog, "scan_cancel")?.targets as Record<string, unknown>[])[1]).toMatchObject({
+        target: "CfgVehicles",
+        targetIndex: 1,
+        status: "cancelled",
+        nextChunkIndex: 11,
+        rowsIngested: 55
+      });
     } finally {
       closeCatalogDb(catalog);
     }
@@ -464,6 +517,12 @@ describe("HTTP bridge auth", () => {
     expect(shouldSkipHttpListen(["node", "dist/index.js", "--stdio-only-existing-bridge"], {})).toBe(true);
     expect(shouldSkipHttpListen(["node", "dist/index.js"], { ARMA_MCP_SKIP_HTTP_LISTEN: "true" })).toBe(true);
     expect(shouldSkipHttpListen(["node", "dist/index.js"], { ARMA_MCP_SKIP_HTTP_LISTEN: "0" })).toBe(false);
+  });
+
+  it("classifies recoverable localhost listen failures", () => {
+    expect(isRecoverableListenError(Object.assign(new Error("listen EPERM: operation not permitted 127.0.0.1:38473"), { code: "EPERM" }))).toBe(true);
+    expect(isRecoverableListenError(Object.assign(new Error("listen EADDRINUSE: address already in use 127.0.0.1:38473"), { code: "EADDRINUSE" }))).toBe(true);
+    expect(isRecoverableListenError(Object.assign(new Error("bad token"), { code: "EINVAL" }))).toBe(false);
   });
 
   it("rejects invalid token", async () => {
