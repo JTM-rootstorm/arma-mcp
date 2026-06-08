@@ -353,6 +353,7 @@ const assetSearchToolSchema = z.object({
   query: z.string().trim().min(1).max(160),
   kinds: z.array(z.string().min(1).max(40)).max(10).optional(),
   factions: z.array(z.string().min(1).max(80)).max(20).optional(),
+  configRoots: z.array(z.string().trim().min(1).max(80)).max(20).optional(),
   limit: z.number().int().positive().max(100).default(25)
 });
 const assetGetClassToolSchema = z.object({

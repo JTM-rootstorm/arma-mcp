@@ -1004,6 +1004,30 @@ describe("synthetic Eden action inventory", () => {
     expect(spatialOps).toContain("warnings");
     expect(spatialOps).toContain("score");
   });
+
+  it("keeps live asset search and class details multi-root", () => {
+    const searchClasses = sqf("addons/main/functions/fn_searchClasses.sqf");
+    const getClassDetails = sqf("addons/main/functions/fn_getClassDetails.sqf");
+
+    for (const root of [
+      "CfgVehicles",
+      "CfgWeapons",
+      "CfgMagazines",
+      "CfgAmmo",
+      "CfgGroups",
+      "CfgMarkers",
+      "CfgFactionClasses",
+      "CfgEditorCategories",
+      "CfgEditorSubcategories",
+      "Cfg3DEN"
+    ]) {
+      expect(searchClasses).toContain(root);
+      expect(getClassDetails).toContain(root);
+    }
+    for (const field of ["hiddenSelections", "animationSources", "scopeArsenal", "simulation", "parents"]) {
+      expect(getClassDetails).toContain(field);
+    }
+  });
 });
 
 describe("sidecar state", () => {

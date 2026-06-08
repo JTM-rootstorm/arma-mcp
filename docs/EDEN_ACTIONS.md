@@ -92,4 +92,4 @@ Generators return dry-run `arma.eden.batch` plans and do not mutate Eden directl
 ## Unsupported Or Best Effort
 
 - Collision checks use broad radius heuristics and nearby terrain-object probes, not exact mesh collision.
-- Class search scans `CfgVehicles` at runtime and is intentionally simple until an asset index exists.
+- Live class search scans common config roots including vehicles, weapons, magazines, ammo, groups, markers, factions, editor categories, and 3DEN config. The catalog database remains the richer indexed source for recommendations, dimensions, screenshots, and tags.
