@@ -99,6 +99,7 @@ Attribute writes are allowlisted. Sensitive scripting fields such as `init`, tri
 - `arma.eden.generate_prop_wall`
 
 Generators return dry-run `arma.eden.batch` plans and do not mutate Eden directly. Apply reviewed plans with `arma.eden.batch`.
+Generator tools accept catalog preferences and use the local class catalog for role-backed substitutions when available, while keeping generated operations compatible with `arma.eden.batch`. Empty or stale catalogs produce vanilla fallback warnings.
 
 ## Implemented With Live-Smoke Caveats
 

@@ -98,6 +98,8 @@ The direct bridge action manifest lives in `sidecar/src/actionManifest.ts`. Deli
 - `arma.eden.generate_cover_line`
 - `arma.eden.generate_prop_wall`
 
+Generator tools return dry-run `arma.eden.batch` plans. Their `catalogPreferences` input can enable local catalog-backed class choices, role overrides, or pinned class overrides; missing catalog data falls back to vanilla classnames with warnings.
+
 ## Catalog, Assets, Terrain, And Visuals
 
 - `arma.assets.search_classes`

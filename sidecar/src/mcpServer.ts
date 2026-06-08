@@ -38,6 +38,7 @@ import { generateCheckpointPlan, validateCheckpointClasses } from "./checkpointP
 import {
   generateAaSite,
   generateCoverLine,
+  generatorRoleForClientRef,
   generateLz,
   generatePropWall,
   generateRoadCheckpoint,
@@ -740,12 +741,20 @@ const generatorAnchorSchema = z
     dir: z.number().optional()
   })
   .default({});
+const generatorCatalogPreferenceSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    roles: z.record(z.string(), z.string().trim().min(1).max(120)).default({}),
+    classOverrides: z.record(z.string(), z.string().trim().min(1).max(160)).default({})
+  })
+  .default({ enabled: true, roles: {}, classOverrides: {} });
 const roadCheckpointGeneratorSchema = z.object({
   dryRun: z.boolean().default(true),
   anchor: generatorAnchorSchema,
   factionTheme: z.string().max(80).optional(),
   size: z.enum(["small", "medium"]).default("small"),
-  features: z.record(z.string(), z.boolean()).optional()
+  features: z.record(z.string(), z.boolean()).optional(),
+  catalogPreferences: generatorCatalogPreferenceSchema
 });
 const smallOutpostGeneratorSchema = z.object({
   dryRun: z.boolean().default(true),
@@ -754,19 +763,22 @@ const smallOutpostGeneratorSchema = z.object({
   radiusMeters: z.number().positive().max(100).default(35),
   objective: z.string().max(120).optional(),
   threatDirectionDeg: z.number().optional(),
-  features: z.record(z.string(), z.boolean()).optional()
+  features: z.record(z.string(), z.boolean()).optional(),
+  catalogPreferences: generatorCatalogPreferenceSchema
 });
 const siteGeneratorSchema = z.object({
   dryRun: z.boolean().default(true),
   anchor: generatorAnchorSchema,
   factionTheme: z.string().max(80).optional(),
-  radiusMeters: z.number().positive().max(100).default(30)
+  radiusMeters: z.number().positive().max(100).default(30),
+  catalogPreferences: generatorCatalogPreferenceSchema
 });
 const lineGeneratorSchema = z.object({
   dryRun: z.boolean().default(true),
   anchor: generatorAnchorSchema,
   lengthMeters: z.number().positive().max(200).default(24),
-  segmentCount: z.number().int().positive().max(30).default(6)
+  segmentCount: z.number().int().positive().max(30).default(6),
+  catalogPreferences: generatorCatalogPreferenceSchema
 });
 const captureCompositionToolSchema = z.object({
   anchor: z
@@ -3001,6 +3013,11 @@ function roleToTags(role: string): { primary: string[]; broad: string[] } {
     gate: { primary: ["gate"], broad: ["wall_segment"] },
     repair: { primary: ["repair"], broad: ["supply"] },
     turret: { primary: ["static_weapon"] },
+    generator_fortification: { primary: ["fortification", "wall_segment", "cover_low"] },
+    generator_light: { primary: ["light", "lamp"] },
+    generator_supply: { primary: ["supply", "ammo_crate"] },
+    generator_structure: { primary: ["structure", "bunker"] },
+    generator_static_weapon: { primary: ["static_weapon", "turret"] },
     task: { primary: ["module_task"], broad: ["module"] },
     respawn: { primary: ["module_respawn"], broad: ["module"] },
     zeus: { primary: ["module_zeus"], broad: ["module"] }
@@ -3204,9 +3221,69 @@ function registerLocalGeneratorTool<T extends z.ZodObject<z.ZodRawShape>>(
     },
     async (input) => {
       const parsed = inputSchema.parse(input);
-      return jsonToolResult(generate(parsed));
+      return jsonToolResult(generate(await withGeneratorCatalogChoices(parsed)));
     }
   );
+}
+
+async function withGeneratorCatalogChoices<T extends Record<string, unknown>>(input: T): Promise<T> {
+  const preferences = asRecord(input.catalogPreferences);
+  if (preferences.enabled === false) {
+    return input;
+  }
+  const classOverrides = asRecord(preferences.classOverrides);
+  const roleOverrides = asRecord(preferences.roles);
+  const catalogChoices: Array<{ clientRef?: string; role?: string; className: string; reason?: string }> = [];
+  for (const [clientRef, className] of Object.entries(classOverrides)) {
+    if (typeof className === "string" && className.trim()) {
+      catalogChoices.push({
+        clientRef,
+        role: generatorRoleForClientRef(clientRef),
+        className,
+        reason: "Pinned by generator catalogPreferences.classOverrides."
+      });
+    }
+  }
+  try {
+    await withCatalogDb((catalogDb) => {
+      for (const [clientRef, role] of Object.entries(roleOverrides)) {
+        if (typeof role !== "string" || !role.trim() || catalogChoices.some((choice) => choice.clientRef === clientRef)) {
+          continue;
+        }
+        const recommendation = recommendCatalogRole(catalogDb, role, 1)[0];
+        const className = recommendation?.class_name;
+        if (typeof className === "string" && className.trim()) {
+          catalogChoices.push({
+            clientRef,
+            role,
+            className,
+            reason: `Selected by catalog role ${role}.`
+          });
+        }
+      }
+      for (const role of ["generator_fortification", "generator_light", "generator_supply", "generator_structure", "generator_static_weapon"]) {
+        if (catalogChoices.some((choice) => choice.role === role && !choice.clientRef)) {
+          continue;
+        }
+        const recommendation = recommendCatalogRole(catalogDb, role, 1)[0];
+        const className = recommendation?.class_name;
+        if (typeof className === "string" && className.trim()) {
+          catalogChoices.push({
+            role,
+            className,
+            reason: `Selected by catalog role ${role}.`
+          });
+        }
+      }
+    });
+  } catch (error) {
+    return {
+      ...input,
+      catalogChoices: [],
+      catalogPreferenceWarning: error instanceof Error ? error.message : String(error)
+    };
+  }
+  return { ...input, catalogChoices };
 }
 
 function registerManagedDiscoveryFallbackTools(
@@ -3563,17 +3640,17 @@ async function callManagedDiscoveryFallbackTool(
       return executeActionTool(state, "eden.get_synced", "read", connectionToolSchema, { entityId: parsed.entityId });
     }
     case "arma.eden.generate_aa_site":
-      return generateAaSite(siteGeneratorSchema.parse(input));
+      return generateAaSite(await withGeneratorCatalogChoices(siteGeneratorSchema.parse(input)));
     case "arma.eden.generate_cover_line":
-      return generateCoverLine(lineGeneratorSchema.parse(input));
+      return generateCoverLine(await withGeneratorCatalogChoices(lineGeneratorSchema.parse(input)));
     case "arma.eden.generate_lz":
-      return generateLz(siteGeneratorSchema.parse(input));
+      return generateLz(await withGeneratorCatalogChoices(siteGeneratorSchema.parse(input)));
     case "arma.eden.generate_prop_wall":
-      return generatePropWall(lineGeneratorSchema.parse(input));
+      return generatePropWall(await withGeneratorCatalogChoices(lineGeneratorSchema.parse(input)));
     case "arma.eden.generate_road_checkpoint":
-      return generateRoadCheckpoint(roadCheckpointGeneratorSchema.parse(input));
+      return generateRoadCheckpoint(await withGeneratorCatalogChoices(roadCheckpointGeneratorSchema.parse(input)));
     case "arma.eden.generate_small_outpost":
-      return generateSmallOutpost(smallOutpostGeneratorSchema.parse(input));
+      return generateSmallOutpost(await withGeneratorCatalogChoices(smallOutpostGeneratorSchema.parse(input)));
     case "arma.eden.listPlaced": {
       const parsed = entityListToolSchema.parse(input);
       const result = await dispatchCatalogAction(state, "eden.list_entities", parsed, 60_000);

@@ -48,7 +48,11 @@ export type AuditEvent = {
     confirmed: boolean;
     result: "queued" | "ok" | "error" | "timeout";
     entityCount?: number;
+    entityIds?: string[];
     classesTouched?: string[];
+    warningCount?: number;
+    errorCount?: number;
+    durationMs?: number;
     errorCode?: string;
   };
 };
@@ -327,7 +331,11 @@ export function createState(maxEvents = 200, requestTimeoutMs = 30_000, maxPendi
         rememberAudit(pending.action, result.ok ? "ok" : "error", {
           errorCode: result.error?.code,
           entityCount: inferEntityCount(result.result),
-          classesTouched: inferClassesTouched(pending.action.params)
+          entityIds: inferEntityIds(result.result),
+          classesTouched: inferClassesTouched(pending.action.params) ?? inferClassesTouched(result.result),
+          warningCount: result.warnings.length,
+          errorCount: result.error ? 1 : inferErrorCount(result.result),
+          durationMs: result.durationMs
         });
       }
 
@@ -373,6 +381,39 @@ function inferEntityCount(value: unknown): number | undefined {
     return operations.length;
   }
   return undefined;
+}
+
+function inferEntityIds(value: unknown): string[] | undefined {
+  const ids = new Set<string>();
+  function visit(candidate: unknown): void {
+    if (Array.isArray(candidate)) {
+      candidate.forEach(visit);
+      return;
+    }
+    if (!candidate || typeof candidate !== "object") {
+      return;
+    }
+    const record = candidate as Record<string, unknown>;
+    for (const key of ["edenId", "entityId"]) {
+      if (typeof record[key] === "string") {
+        ids.add(String(record[key]));
+      }
+    }
+    for (const key of ["created", "updated", "deleted", "selected", "entities", "missing"]) {
+      visit(record[key]);
+    }
+  }
+  visit(value);
+  return ids.size > 0 ? Array.from(ids).slice(0, 100) : undefined;
+}
+
+function inferErrorCount(value: unknown): number | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const errors = record.errors;
+  return Array.isArray(errors) ? errors.length : undefined;
 }
 
 function inferClassesTouched(value: unknown): string[] | undefined {

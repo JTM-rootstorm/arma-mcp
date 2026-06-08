@@ -33,7 +33,15 @@ import {
   writeScanTargetProgress,
   writeScanManifest
 } from "./catalogDb.js";
-import { generateAaSite, generateCoverLine, generateLz, generatePropWall, generateRoadCheckpoint, generateSmallOutpost } from "./generators.js";
+import {
+  generateAaSite,
+  generateCoverLine,
+  generatorRoleForClientRef,
+  generateLz,
+  generatePropWall,
+  generateRoadCheckpoint,
+  generateSmallOutpost
+} from "./generators.js";
 import { isRecoverableListenError, shouldSkipHttpListen, startHttpBridge, type StartedBridge } from "./httpBridge.js";
 import { logger } from "./log.js";
 import { MCP_DISCOVERY_FALLBACK_TOOL_NAMES, pruneTerminalCatalogScanJobIds, recommendCatalogRole } from "./mcpServer.js";
@@ -1042,6 +1050,38 @@ describe("synthetic Eden action inventory", () => {
     expect(missing).toEqual([]);
   });
 
+  it("keeps fallback names inside the local typed safety boundary", () => {
+    const exclusions = sqf("EXCLUDED_ACTIONS.md");
+    const bannedNames = [...exclusions.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
+    const unsafe = MCP_DISCOVERY_FALLBACK_TOOL_NAMES.filter(
+      (toolName) =>
+        bannedNames.includes(toolName) ||
+        toolName.includes("raw") ||
+        toolName.includes("remoteExec") ||
+        toolName.includes("server.") ||
+        toolName.includes("zeus.")
+    );
+
+    expect(unsafe).toEqual([]);
+  });
+
+  it("keeps fallback mutation cases policy-gated through executeActionTool", () => {
+    const mcpServer = sqf("sidecar/src/mcpServer.ts");
+    const mutatingFallbacks = MCP_DISCOVERY_FALLBACK_TOOL_NAMES.filter((toolName) =>
+      toolName.match(/^arma\.eden\.(create|set|delete|batch|sync|unsync|assign|remove|reorder|attach)/)
+    );
+    const missing = mutatingFallbacks.filter((toolName) => {
+      const caseIndex = mcpServer.indexOf(`case "${toolName}"`);
+      if (caseIndex < 0) {
+        return true;
+      }
+      const body = mcpServer.slice(caseIndex, caseIndex + 1_600);
+      return !body.includes("executeActionTool");
+    });
+
+    expect(missing).toEqual([]);
+  });
+
   it("keeps excluded action policy documented outside local planning files", () => {
     const exclusions = sqf("EXCLUDED_ACTIONS.md");
 
@@ -1325,6 +1365,44 @@ describe("sidecar state", () => {
     });
   });
 
+  it("records enriched audit payloads for completed write actions", async () => {
+    const state = createState();
+    const queued = state.queueAction({
+      action: "eden.create_entity",
+      mode: "write",
+      params: { className: "B_Soldier_F" },
+      dryRun: false
+    });
+    state.drainCommands();
+    state.completeActionResult({
+      schemaVersion,
+      requestId: queued.action.requestId,
+      ok: true,
+      action: "eden.create_entity",
+      durationMs: 12,
+      result: {
+        created: [{ edenId: "eden:object:1", className: "B_Soldier_F" }],
+        warnings: ["synthetic"]
+      },
+      warnings: ["synthetic"]
+    });
+    await expect(queued.result).resolves.toMatchObject({ ok: true });
+
+    const [audit] = state.recentEvents(5).filter((event) => "type" in event && event.type === "audit");
+    expect(audit).toMatchObject({
+      type: "audit",
+      payload: {
+        action: "eden.create_entity",
+        result: "ok",
+        entityCount: 1,
+        entityIds: ["eden:object:1"],
+        classesTouched: ["B_Soldier_F"],
+        warningCount: 1,
+        durationMs: 12
+      }
+    });
+  });
+
   it("times out pending actions cleanly", async () => {
     const state = createState(200, 5);
     const queued = state.queueAction({ action: "eden.get_status", mode: "read" });
@@ -1378,6 +1456,19 @@ describe("write policy", () => {
         confirmation: { confirmed: true, reason: "remove failed preview" }
       })
     ).not.toThrow();
+    expect(() =>
+      enforceToolPolicy({
+        action: "eden.delete_waypoint",
+        dryRun: false
+      })
+    ).toThrow(/confirmation/);
+    expect(() =>
+      enforceToolPolicy({
+        action: "eden.batch",
+        dryRun: false,
+        operations: [{ op: "delete_waypoint", waypointId: "eden:waypoint:1" }]
+      })
+    ).toThrow(/confirmation/);
   });
 
   it("rejects non-allowlisted write attributes", () => {
@@ -1426,6 +1517,35 @@ describe("procedural generators", () => {
       expect(generated.plan.operations.every((operation) => operation.layer)).toBe(true);
       expect(generated.warnings.length).toBeGreaterThan(0);
     }
+  });
+
+  it("applies catalog-backed class choices without polluting batch operations", () => {
+    const generated = generateRoadCheckpoint({
+      anchor: { positionATL: [0, 0, 0], dir: 0 },
+      catalogChoices: [
+        { role: "generator_fortification", className: "Land_Custom_Barrier_F", reason: "synthetic catalog" },
+        { role: "generator_light", className: "Land_Custom_Light_F", reason: "synthetic catalog" }
+      ]
+    });
+
+    expect(generated.catalog?.applied).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "generator_fortification", className: "Land_Custom_Barrier_F" }),
+        expect.objectContaining({ role: "generator_light", className: "Land_Custom_Light_F" })
+      ])
+    );
+    expect(generated.plan.operations.find((operation) => operation.clientRef === "barrier_left")?.className).toBe("Land_Custom_Barrier_F");
+    expect(generated.plan.operations.find((operation) => operation.clientRef === "light_left")?.className).toBe("Land_Custom_Light_F");
+    expect(generated.plan.operations.some((operation) => "catalogRole" in operation || "reason" in operation)).toBe(false);
+  });
+
+  it("reports fallback generator roles when catalog choices are unavailable", () => {
+    const generated = generateSmallOutpost({ anchor: { positionATL: [0, 0, 0], dir: 0 } });
+
+    expect(generated.warnings.join(" ")).toContain("vanilla fallback");
+    expect(generated.catalog?.missingRoles).toContain("generator_structure");
+    expect(generatorRoleForClientRef("landing_light_1")).toBe("generator_light");
+    expect(generatorRoleForClientRef("ammo_cache")).toBe("generator_supply");
   });
 });
 

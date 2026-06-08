@@ -14,6 +14,13 @@ export type GeneratedBatchOperation = {
   layer?: string;
 };
 
+export type GeneratorCatalogChoice = {
+  clientRef?: string;
+  role?: string;
+  className: string;
+  reason?: string;
+};
+
 export type GeneratedBatchPlan = {
   schemaVersion: 1;
   id: string;
@@ -33,7 +40,8 @@ export function generateRoadCheckpoint(input: {
   factionTheme?: string;
   size?: "small" | "medium";
   features?: Record<string, boolean>;
-}): { plan: GeneratedBatchPlan; warnings: string[] } {
+  catalogChoices?: GeneratorCatalogChoice[];
+}): { plan: GeneratedBatchPlan; warnings: string[]; catalog?: Record<string, unknown> } {
   const scale = input.size === "medium" ? 1.4 : 1;
   const features = { barriers: true, lights: true, guardPositions: true, trigger: true, marker: true, ...(input.features ?? {}) };
   const layer = layerName(input.factionTheme, "Road Checkpoint");
@@ -56,7 +64,7 @@ export function generateRoadCheckpoint(input: {
   if (features.trigger) {
     operations.push(trigger("checkpoint_trigger", [0, 0, 0], 0, layer, { sizeA: 12 * scale, sizeB: 12 * scale, isRectangle: false }));
   }
-  return planResult("Road Checkpoint", operations, input.anchor);
+  return planResult("Road Checkpoint", operations, input.anchor, input.catalogChoices);
 }
 
 export function generateSmallOutpost(input: {
@@ -66,7 +74,8 @@ export function generateSmallOutpost(input: {
   objective?: string;
   threatDirectionDeg?: number;
   features?: Record<string, boolean>;
-}): { plan: GeneratedBatchPlan; warnings: string[] } {
+  catalogChoices?: GeneratorCatalogChoice[];
+}): { plan: GeneratedBatchPlan; warnings: string[]; catalog?: Record<string, unknown> } {
   const radius = Math.min(Math.max(input.radiusMeters ?? 35, 15), 80);
   const layer = layerName(input.factionTheme, "Small Outpost");
   const threatDir = input.threatDirectionDeg ?? 0;
@@ -81,10 +90,15 @@ export function generateSmallOutpost(input: {
     const radians = (angle * Math.PI) / 180;
     operations.push(object(`perimeter_${index + 1}`, "Land_HBarrier_1_F", [Math.cos(radians) * radius, Math.sin(radians) * radius, 0], angle + 90, layer));
   }
-  return planResult("Small Outpost", operations, input.anchor);
+  return planResult("Small Outpost", operations, input.anchor, input.catalogChoices);
 }
 
-export function generateAaSite(input: { anchor?: GeneratorAnchor; factionTheme?: string; radiusMeters?: number }): { plan: GeneratedBatchPlan; warnings: string[] } {
+export function generateAaSite(input: {
+  anchor?: GeneratorAnchor;
+  factionTheme?: string;
+  radiusMeters?: number;
+  catalogChoices?: GeneratorCatalogChoice[];
+}): { plan: GeneratedBatchPlan; warnings: string[]; catalog?: Record<string, unknown> } {
   const radius = input.radiusMeters ?? 25;
   const layer = layerName(input.factionTheme, "AA Site");
   const operations: GeneratedBatchOperation[] = [
@@ -98,10 +112,15 @@ export function generateAaSite(input: { anchor?: GeneratorAnchor; factionTheme?:
     const radians = (angle * Math.PI) / 180;
     operations.push(object(`aa_cover_${index + 1}`, "Land_BagFence_Round_F", [Math.cos(radians) * 8, Math.sin(radians) * 8, 0], angle + 180, layer));
   }
-  return planResult("AA Site", operations, input.anchor);
+  return planResult("AA Site", operations, input.anchor, input.catalogChoices);
 }
 
-export function generateLz(input: { anchor?: GeneratorAnchor; factionTheme?: string; radiusMeters?: number }): { plan: GeneratedBatchPlan; warnings: string[] } {
+export function generateLz(input: {
+  anchor?: GeneratorAnchor;
+  factionTheme?: string;
+  radiusMeters?: number;
+  catalogChoices?: GeneratorCatalogChoice[];
+}): { plan: GeneratedBatchPlan; warnings: string[]; catalog?: Record<string, unknown> } {
   const radius = input.radiusMeters ?? 30;
   const layer = layerName(input.factionTheme, "Landing Zone");
   return planResult(
@@ -113,11 +132,17 @@ export function generateLz(input: { anchor?: GeneratorAnchor; factionTheme?: str
       object("landing_light_1", "Land_PortableLight_single_F", [-radius * 0.6, -radius * 0.4, 0], 45, layer),
       object("landing_light_2", "Land_PortableLight_single_F", [radius * 0.6, -radius * 0.4, 0], -45, layer)
     ],
-    input.anchor
+    input.anchor,
+    input.catalogChoices
   );
 }
 
-export function generateCoverLine(input: { anchor?: GeneratorAnchor; lengthMeters?: number; segmentCount?: number }): { plan: GeneratedBatchPlan; warnings: string[] } {
+export function generateCoverLine(input: {
+  anchor?: GeneratorAnchor;
+  lengthMeters?: number;
+  segmentCount?: number;
+  catalogChoices?: GeneratorCatalogChoice[];
+}): { plan: GeneratedBatchPlan; warnings: string[]; catalog?: Record<string, unknown> } {
   const segments = Math.min(Math.max(input.segmentCount ?? 5, 1), 25);
   const length = input.lengthMeters ?? 20;
   const layer = "MCP Generated Cover Line";
@@ -125,10 +150,15 @@ export function generateCoverLine(input: { anchor?: GeneratorAnchor; lengthMeter
     const t = segments === 1 ? 0 : index / (segments - 1) - 0.5;
     return object(`cover_${index + 1}`, "Land_BagFence_Long_F", [t * length, 0, 0], 0, layer);
   });
-  return planResult("Cover Line", operations, input.anchor);
+  return planResult("Cover Line", operations, input.anchor, input.catalogChoices);
 }
 
-export function generatePropWall(input: { anchor?: GeneratorAnchor; lengthMeters?: number; segmentCount?: number }): { plan: GeneratedBatchPlan; warnings: string[] } {
+export function generatePropWall(input: {
+  anchor?: GeneratorAnchor;
+  lengthMeters?: number;
+  segmentCount?: number;
+  catalogChoices?: GeneratorCatalogChoice[];
+}): { plan: GeneratedBatchPlan; warnings: string[]; catalog?: Record<string, unknown> } {
   const segments = Math.min(Math.max(input.segmentCount ?? 6, 1), 30);
   const length = input.lengthMeters ?? 24;
   const layer = "MCP Generated Prop Wall";
@@ -136,7 +166,7 @@ export function generatePropWall(input: { anchor?: GeneratorAnchor; lengthMeters
     const t = segments === 1 ? 0 : index / (segments - 1) - 0.5;
     return object(`wall_${index + 1}`, "Land_HBarrier_1_F", [t * length, 0, 0], 0, layer);
   });
-  return planResult("Prop Wall", operations, input.anchor);
+  return planResult("Prop Wall", operations, input.anchor, input.catalogChoices);
 }
 
 function object(clientRef: string, className: string, offset: [number, number, number], dir: number, layer: string): GeneratedBatchOperation {
@@ -151,9 +181,15 @@ function trigger(clientRef: string, offset: [number, number, number], dir: numbe
   return { op: "create_trigger", clientRef, type: "Trigger", className: "EmptyDetector", transform: { positionATL: offset, dir }, attributes, layer };
 }
 
-function planResult(name: string, operations: GeneratedBatchOperation[], anchor: GeneratorAnchor = {}): { plan: GeneratedBatchPlan; warnings: string[] } {
+function planResult(
+  name: string,
+  operations: GeneratedBatchOperation[],
+  anchor: GeneratorAnchor = {},
+  catalogChoices: GeneratorCatalogChoice[] = []
+): { plan: GeneratedBatchPlan; warnings: string[]; catalog?: Record<string, unknown> } {
   const base = anchor.positionATL ?? [0, 0, 0];
   const dir = anchor.dir ?? 0;
+  const appliedCatalog = applyCatalogChoices(operations, catalogChoices);
   return {
     plan: {
       schemaVersion: 1,
@@ -170,8 +206,63 @@ function planResult(name: string, operations: GeneratedBatchOperation[], anchor:
         }
       }))
     },
-    warnings: ["Generated plan is dry-run by default; apply through arma.eden.batch after review."]
+    warnings: [
+      "Generated plan is dry-run by default; apply through arma.eden.batch after review.",
+      ...appliedCatalog.warnings
+    ],
+    catalog: {
+      applied: appliedCatalog.applied,
+      missingRoles: appliedCatalog.missingRoles
+    }
   };
+}
+
+function applyCatalogChoices(
+  operations: GeneratedBatchOperation[],
+  catalogChoices: GeneratorCatalogChoice[]
+): { applied: GeneratorCatalogChoice[]; missingRoles: string[]; warnings: string[] } {
+  const choicesByRef = new Map(catalogChoices.filter((choice) => choice.clientRef).map((choice) => [choice.clientRef!, choice]));
+  const choicesByRole = new Map(catalogChoices.filter((choice) => choice.role).map((choice) => [choice.role!, choice]));
+  const applied: GeneratorCatalogChoice[] = [];
+  const missingRoles = new Set<string>();
+  for (const operation of operations) {
+    if (operation.op !== "create_entity") {
+      continue;
+    }
+    const role = generatorRoleForClientRef(operation.clientRef);
+    const choice = choicesByRef.get(operation.clientRef) ?? choicesByRole.get(role);
+    if (choice?.className) {
+      operation.className = choice.className;
+      applied.push({ ...choice, clientRef: operation.clientRef, role });
+    } else {
+      missingRoles.add(role);
+    }
+  }
+  return {
+    applied,
+    missingRoles: Array.from(missingRoles),
+    warnings:
+      catalogChoices.length > 0
+        ? []
+        : ["No catalog-backed generator preferences were available; using vanilla fallback classnames."]
+  };
+}
+
+export function generatorRoleForClientRef(clientRef: string): string {
+  const normalized = clientRef.toLowerCase();
+  if (normalized.includes("light")) {
+    return "generator_light";
+  }
+  if (normalized.includes("ammo") || normalized.includes("supply") || normalized.includes("crate")) {
+    return "generator_supply";
+  }
+  if (normalized.includes("tower") || normalized.includes("hq") || normalized.includes("house")) {
+    return "generator_structure";
+  }
+  if (normalized.includes("aa_launcher")) {
+    return "generator_static_weapon";
+  }
+  return "generator_fortification";
 }
 
 function rotateOffset(base: [number, number, number], dir: number, offset: [number, number, number]): [number, number, number] {

@@ -436,11 +436,13 @@ Legacy MVP aliases remain available for compatibility:
   \item Sidecar state is in-memory only.
   \item The addon assumes current Arma 3 support for \code{fromJSON} and \code{toJSON}.
   \item The extension reads token, host, and port from \code{ArmaMCP.ini}, with environment variables as fallback settings.
-  \item No asset index, mesh parsing, collision validation, road detection, terrain
-        sampling, or faction-aware object catalog exists yet.
+  \item Live class lookup, local catalog scans, terrain sampling, road probes, and
+        broad spatial validation are implemented as review aids. Mesh parsing,
+        exact collision validation, and fully faction-aware catalog selection are
+        still future work.
   \item Marker creation still needs live Eden verification.
-  \item BattleEye/public-server deployment, audit logs, and admin authority
-        controls are future work.
+  \item BattleEye/public-server deployment, durable audit logs, and admin
+        authority controls are future work.
 \end{itemize}
 
 \section{One-Command Validation}
