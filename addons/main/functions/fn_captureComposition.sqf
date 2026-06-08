@@ -84,6 +84,64 @@ private _edenToClientRef = createHashMap;
     ];
 } forEach _selectedEntries;
 
+private _groupLinks = [];
+private _groupLinkKeys = createHashMap;
+private _waypointLinks = [];
+{
+    private _entity = _x select 0;
+    private _entityType = _x select 1;
+    if (_entityType isEqualTo "Group") then {
+        private _groupId = [_entity, "Group"] call AMCP_fnc_registerEntity;
+        private _groupRef = _edenToClientRef getOrDefault [_groupId, ""];
+        if (_groupRef isNotEqualTo "") then {
+            {
+                private _unitId = [_x, "Object"] call AMCP_fnc_registerEntity;
+                private _unitRef = _edenToClientRef getOrDefault [_unitId, ""];
+                private _key = format ["%1:%2", _groupRef, _unitRef];
+                if (_unitRef isNotEqualTo "" && {isNil {_groupLinkKeys get _key}}) then {
+                    _groupLinkKeys set [_key, true];
+                    _groupLinks pushBack createHashMapFromArray [
+                        ["groupRef", _groupRef],
+                        ["unitRef", _unitRef]
+                    ];
+                };
+            } forEach (units _entity);
+        };
+    };
+    if (_entityType isEqualTo "Object") then {
+        private _unitId = [_entity, "Object"] call AMCP_fnc_registerEntity;
+        private _unitRef = _edenToClientRef getOrDefault [_unitId, ""];
+        private _group = group _entity;
+        if (!isNull _group) then {
+            private _groupId = [_group, "Group"] call AMCP_fnc_registerEntity;
+            private _groupRef = _edenToClientRef getOrDefault [_groupId, ""];
+            private _key = format ["%1:%2", _groupRef, _unitRef];
+            if (_groupRef isNotEqualTo "" && {_unitRef isNotEqualTo ""} && {isNil {_groupLinkKeys get _key}}) then {
+                _groupLinkKeys set [_key, true];
+                _groupLinks pushBack createHashMapFromArray [
+                    ["groupRef", _groupRef],
+                    ["unitRef", _unitRef]
+                ];
+            };
+        };
+    };
+    if (_entityType isEqualTo "Waypoint") then {
+        private _waypointId = [_entity, "Waypoint"] call AMCP_fnc_registerEntity;
+        private _waypointRef = _edenToClientRef getOrDefault [_waypointId, ""];
+        private _group = _entity param [0, grpNull];
+        private _groupId = if (_group isEqualType grpNull) then {[_group, "Group"] call AMCP_fnc_registerEntity} else {""};
+        private _groupRef = _edenToClientRef getOrDefault [_groupId, ""];
+        if (_groupRef isNotEqualTo "" && {_waypointRef isNotEqualTo ""}) then {
+            _waypointLinks pushBack createHashMapFromArray [
+                ["groupRef", _groupRef],
+                ["waypointRef", _waypointRef],
+                ["index", _entity param [1, -1]],
+                ["type", waypointType _entity]
+            ];
+        };
+    };
+} forEach _selectedEntries;
+
 private _connections = [];
 if (_includeConnections) then {
     {
@@ -116,10 +174,12 @@ if (_includeConnections) then {
 
 createHashMapFromArray [
     ["composition", createHashMapFromArray [
-        ["schemaVersion", 1],
+        ["schemaVersion", 2],
         ["name", _name],
         ["anchor", _anchorPos],
         ["entities", _entities],
-        ["connections", _connections]
+        ["connections", _connections],
+        ["groupLinks", _groupLinks],
+        ["waypointLinks", _waypointLinks]
     ]]
 ]

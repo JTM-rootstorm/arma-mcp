@@ -69,7 +69,8 @@ collect3DENHistory {
         _created pushBack createHashMapFromArray [
             ["edenId", _edenId],
             ["type", _entityType],
-            ["className", _className]
+            ["className", _className],
+            ["groupId", if (_entity isEqualType objNull && {!isNull (group _entity)}) then {[(group _entity), "Group"] call AMCP_fnc_registerEntity} else {""}]
         ];
         if (_select) then {
             set3DENSelected [_entity];

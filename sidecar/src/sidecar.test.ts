@@ -1211,6 +1211,25 @@ describe("synthetic Eden action inventory", () => {
     expect(dispatcher).toContain('if ((_entityId find "eden:group:") isEqualTo 0)');
     expect(dispatcher).toContain('if ((_entityId find "eden:waypoint:") isEqualTo 0)');
   });
+
+  it("keeps composition capture/apply portable across local relationship copies", () => {
+    const capture = sqf("addons/main/functions/fn_captureComposition.sqf");
+    const apply = sqf("addons/main/functions/fn_applyComposition.sqf");
+    const createEntity = sqf("addons/main/functions/fn_createEntity.sqf");
+
+    for (const field of ["groupLinks", "waypointLinks", "schemaVersion\", 2"]) {
+      expect(capture).toContain(field);
+    }
+    expect(capture).toContain("unitRef");
+    expect(capture).toContain("waypointRef");
+    expect(createEntity).toContain('"groupId"');
+    expect(apply).toContain("_refToEdenId set [_groupRef, _groupId]");
+    expect(apply).toContain('["assignUnit"');
+    expect(apply).toContain('["createWaypoint"');
+    expect(apply).toContain('["sync"');
+    expect(apply).toContain("wouldCreateWaypoints");
+    expect(apply).toContain("wouldAssignGroups");
+  });
 });
 
 describe("sidecar state", () => {
