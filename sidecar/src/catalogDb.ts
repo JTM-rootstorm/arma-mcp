@@ -42,6 +42,8 @@ export type ScanTargetProgressInput = {
   finishedAt?: string | null;
 };
 
+const terminalScanStatuses = new Set(["complete", "failed", "cancelled"]);
+
 export type CatalogClassInput = {
   className: string;
   latestScanId: string;
@@ -666,6 +668,11 @@ export function initializeScanTargets(catalogDb: CatalogDb, scanId: string, targ
 }
 
 export function writeScanTargetProgress(catalogDb: CatalogDb, input: ScanTargetProgressInput): void {
+  const manifest = getScanManifest(catalogDb, input.scanId);
+  if (manifest && terminalScanStatuses.has(String(manifest.status))) {
+    reconcileTerminalScanTargets(catalogDb, input.scanId, String(manifest.status) as ScanStatus);
+    return;
+  }
   const existingIndex = input.targetIndex ?? getScanTargetIndex(catalogDb, input.scanId, input.target);
   catalogDb.db
     .prepare(
@@ -690,16 +697,29 @@ export function writeScanTargetProgress(catalogDb: CatalogDb, input: ScanTargetP
             THEN scan_targets.status
           ELSE COALESCE(excluded.status, scan_targets.status)
         END,
-        next_chunk_index = COALESCE(excluded.next_chunk_index, scan_targets.next_chunk_index),
-        total_records = COALESCE(excluded.total_records, scan_targets.total_records),
+        next_chunk_index = CASE
+          WHEN scan_targets.status IN ('complete', 'failed', 'cancelled') THEN scan_targets.next_chunk_index
+          ELSE COALESCE(excluded.next_chunk_index, scan_targets.next_chunk_index)
+        END,
+        total_records = CASE
+          WHEN scan_targets.status IN ('complete', 'failed', 'cancelled') THEN scan_targets.total_records
+          ELSE COALESCE(excluded.total_records, scan_targets.total_records)
+        END,
         rows_ingested = CASE
+          WHEN scan_targets.status IN ('complete', 'failed', 'cancelled') THEN scan_targets.rows_ingested
           WHEN ? IS NOT NULL THEN scan_targets.rows_ingested + ?
           WHEN ? IS NOT NULL THEN ?
           ELSE scan_targets.rows_ingested
         END,
-        error = excluded.error,
+        error = CASE
+          WHEN scan_targets.status IN ('complete', 'failed', 'cancelled') AND excluded.error IS NULL THEN scan_targets.error
+          ELSE excluded.error
+        END,
         started_at = COALESCE(scan_targets.started_at, excluded.started_at),
-        finished_at = COALESCE(excluded.finished_at, scan_targets.finished_at),
+        finished_at = CASE
+          WHEN scan_targets.status IN ('complete', 'failed', 'cancelled') THEN scan_targets.finished_at
+          ELSE COALESCE(excluded.finished_at, scan_targets.finished_at)
+        END,
         updated_at = CURRENT_TIMESTAMP`
     )
     .run(
@@ -732,6 +752,7 @@ export function getScanProgress(catalogDb: CatalogDb, scanId: string): Record<st
   if (!manifest) {
     return null;
   }
+  reconcileTerminalScanTargets(catalogDb, scanId, String(manifest.status) as ScanStatus);
   const targets = catalogDb.db
     .prepare(
       `SELECT
@@ -782,6 +803,7 @@ export function markScanFinished(catalogDb: CatalogDb, scanId: string, status: S
        WHERE scan_id = ?`
     )
     .run(status, classCounts ? JSON.stringify(classCounts) : null, scanId);
+  reconcileTerminalScanTargets(catalogDb, scanId, status, error);
   if (error) {
     catalogDb.db
       .prepare(
@@ -848,6 +870,25 @@ export function repairStaleScan(catalogDb: CatalogDb, scanId: string): Record<st
       .run(scanId);
   }
   return { ok: true, scan: getScanProgress(catalogDb, scanId) };
+}
+
+function reconcileTerminalScanTargets(catalogDb: CatalogDb, scanId: string, status: ScanStatus, error?: string): number {
+  if (!terminalScanStatuses.has(status)) {
+    return 0;
+  }
+  const targetStatus = status === "cancelled" ? "cancelled" : status === "failed" ? "failed" : "complete";
+  const result = catalogDb.db
+    .prepare(
+      `UPDATE scan_targets
+       SET status = ?,
+           error = CASE WHEN ? IS NOT NULL THEN COALESCE(error, ?) ELSE error END,
+           finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE scan_id = ?
+         AND status NOT IN ('complete', 'failed', 'cancelled')`
+    )
+    .run(targetStatus, error ?? null, error ?? null, scanId);
+  return Number(result.changes);
 }
 
 export function upsertCatalogClass(catalogDb: CatalogDb, catalogClass: CatalogClassInput): void {

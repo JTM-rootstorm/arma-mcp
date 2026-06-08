@@ -33,6 +33,7 @@ import {
 import { generateAaSite, generateCoverLine, generateLz, generatePropWall, generateRoadCheckpoint, generateSmallOutpost } from "./generators.js";
 import { isRecoverableListenError, shouldSkipHttpListen, startHttpBridge, type StartedBridge } from "./httpBridge.js";
 import { logger } from "./log.js";
+import { MCP_DISCOVERY_FALLBACK_TOOL_NAMES } from "./mcpServer.js";
 import { createRemoteBridgeState } from "./remoteBridgeState.js";
 import { compositionPlanSchema } from "./schema.js";
 import { createState } from "./state.js";
@@ -254,8 +255,42 @@ describe("catalog database", () => {
         target: "CfgVehicles",
         targetIndex: 1,
         status: "cancelled",
-        nextChunkIndex: 11,
-        rowsIngested: 55
+        nextChunkIndex: 10,
+        rowsIngested: 50
+      });
+    } finally {
+      closeCatalogDb(catalog);
+    }
+  });
+
+  it("repairs terminal manifest targets that were left running in persisted scan state", () => {
+    const catalog = openCatalogDb(tempCatalogPath());
+    try {
+      ensureCatalogSchema(catalog);
+      writeScanManifest(catalog, {
+        scanId: "scan_persisted_cancel",
+        loadedModsHash: "mods",
+        loadedAddonsHash: "addons",
+        status: "cancelled",
+        finishedAt: "2026-06-08T00:25:29.000Z"
+      });
+      initializeScanTargets(catalog, "scan_persisted_cancel", ["CfgVehicles"]);
+      catalog.db
+        .prepare(
+          `UPDATE scan_targets
+           SET status = 'running', next_chunk_index = 14, finished_at = '2026-06-08 00:25:29'
+           WHERE scan_id = ? AND target = ?`
+        )
+        .run("scan_persisted_cancel", "CfgVehicles");
+
+      const progress = getScanProgress(catalog, "scan_persisted_cancel");
+
+      expect(progress?.manifest).toMatchObject({ status: "cancelled" });
+      expect(progress?.currentTarget).toBeNull();
+      expect((progress?.targets as Record<string, unknown>[])[0]).toMatchObject({
+        target: "CfgVehicles",
+        status: "cancelled",
+        finishedAt: "2026-06-08 00:25:29"
       });
     } finally {
       closeCatalogDb(catalog);
@@ -322,6 +357,39 @@ describe("catalog database", () => {
         parents: ["Module_F", "Logic"]
       })?.catalogClass
     ).toMatchObject({ kind: "module" });
+  });
+});
+
+describe("managed MCP discovery fallback", () => {
+  it("covers the PLAN-002 managed-discovery absence set", () => {
+    const fallbackTools = new Set<string>(MCP_DISCOVERY_FALLBACK_TOOL_NAMES);
+    for (const toolName of [
+      "arma.bridge.diagnostics",
+      "arma.camera.captureClassAngles",
+      "arma.camera.createPreviewScene",
+      "arma.camera.inspectClass",
+      "arma.composition.plan",
+      "arma.eden.apply_composition",
+      "arma.eden.batch",
+      "arma.eden.create_entity",
+      "arma.eden.find_entities",
+      "arma.eden.generate_aa_site",
+      "arma.eden.generate_cover_line",
+      "arma.eden.generate_lz",
+      "arma.eden.generate_prop_wall",
+      "arma.eden.generate_road_checkpoint",
+      "arma.eden.generate_small_outpost",
+      "arma.eden.listPlaced",
+      "arma.eden.list_entities",
+      "arma.eden.set_entity_transform",
+      "arma.eden.validate_plan",
+      "arma.terrain.sample_area",
+      "arma.visual.inspectClass",
+      "arma_queue_apply_plan",
+      "arma_request_editor_snapshot"
+    ]) {
+      expect(fallbackTools.has(toolName)).toBe(true);
+    }
   });
 });
 

@@ -65,6 +65,41 @@ import type { ArmaMcpState } from "./state.js";
 
 const emptyInputSchema = z.object({});
 const sidecarRepoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+export const MCP_DISCOVERY_FALLBACK_TOOL_NAMES = [
+  "arma.bridge.diagnostics",
+  "arma.bridge.get_capabilities",
+  "arma.bridge.ping",
+  "arma.camera.captureClassAngles",
+  "arma.camera.createPreviewScene",
+  "arma.camera.inspectClass",
+  "arma.catalog.scanStart",
+  "arma.catalog.scanStatus",
+  "arma.catalog.scanPoll",
+  "arma.catalog.scanCancel",
+  "arma.catalog.scanFinalize",
+  "arma.catalog.scanRepair",
+  "arma.catalog.search",
+  "arma.catalog.status",
+  "arma.composition.plan",
+  "arma.eden.apply_composition",
+  "arma.eden.batch",
+  "arma.eden.create_entity",
+  "arma.eden.find_entities",
+  "arma.eden.generate_aa_site",
+  "arma.eden.generate_cover_line",
+  "arma.eden.generate_lz",
+  "arma.eden.generate_prop_wall",
+  "arma.eden.generate_road_checkpoint",
+  "arma.eden.generate_small_outpost",
+  "arma.eden.listPlaced",
+  "arma.eden.list_entities",
+  "arma.eden.set_entity_transform",
+  "arma.eden.validate_plan",
+  "arma.terrain.sample_area",
+  "arma.visual.inspectClass",
+  "arma_queue_apply_plan",
+  "arma_request_editor_snapshot"
+] as const;
 type CatalogScanJob = {
   scanId: string;
   targets: string[];
@@ -84,6 +119,10 @@ const catalogScanToolSchema = z.object({
   maxChunks: z.number().int().positive().max(50_000).default(10_000),
   timeoutMs: z.number().int().positive().max(60_000).default(30_000),
   background: z.boolean().default(true)
+});
+const managedDiscoveryFallbackCallSchema = z.object({
+  toolName: z.enum(MCP_DISCOVERY_FALLBACK_TOOL_NAMES),
+  input: z.record(z.string(), z.unknown()).default({})
 });
 const catalogScanStatusToolSchema = z.object({
   scanId: z.string().trim().min(1).max(160).optional()
@@ -412,6 +451,7 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig,
         httpBridge: { host: bridgeConfig.host, port: bridgeConfig.port }
       })
   );
+  registerManagedDiscoveryFallbackTools(server, state, bridgeConfig, runtime);
 
   server.registerTool(
     "arma.bridge.get_status",
@@ -2141,6 +2181,285 @@ function registerLocalGeneratorTool<T extends z.ZodObject<z.ZodRawShape>>(
   );
 }
 
+function registerManagedDiscoveryFallbackTools(
+  server: McpServer,
+  state: ArmaMcpState,
+  bridgeConfig: BridgeConfig,
+  runtime: SidecarRuntimeInfo
+): void {
+  server.registerTool(
+    "arma_discovery",
+    {
+      title: "Arma MCP Discovery",
+      description: "List tools covered by the managed-discovery fallback router.",
+      inputSchema: emptyInputSchema.shape
+    },
+    async () =>
+      jsonToolResult({
+        ok: true,
+        fallbackTool: "arma_call",
+        fallbackCallableTools: [...MCP_DISCOVERY_FALLBACK_TOOL_NAMES],
+        runtime,
+        httpBridge: { host: bridgeConfig.host, port: bridgeConfig.port }
+      })
+  );
+
+  server.registerTool(
+    "arma_call",
+    {
+      title: "Arma MCP Fallback Call",
+      description: "Call an allowlisted ArmaMCP tool when managed discovery omits the individual tool name.",
+      inputSchema: managedDiscoveryFallbackCallSchema.shape
+    },
+    async (input) => {
+      const parsed = managedDiscoveryFallbackCallSchema.parse(input);
+      return jsonToolResult(await callManagedDiscoveryFallbackTool(state, bridgeConfig, runtime, parsed.toolName, parsed.input));
+    }
+  );
+}
+
+async function callManagedDiscoveryFallbackTool(
+  state: ArmaMcpState,
+  bridgeConfig: BridgeConfig,
+  runtime: SidecarRuntimeInfo,
+  toolName: (typeof MCP_DISCOVERY_FALLBACK_TOOL_NAMES)[number],
+  input: Record<string, unknown>
+): Promise<unknown> {
+  switch (toolName) {
+    case "arma.bridge.diagnostics": {
+      const status = await readBridgeStatus(state);
+      return {
+        sidecarConnected: true,
+        runtime,
+        httpBridge: { host: bridgeConfig.host, port: bridgeConfig.port, url: runtime.httpBridgeUrl },
+        bridgeReachable: status.ok,
+        armaConnected: status.ok ? status.lastSeenAt !== null : false,
+        edenAvailable: status.ok ? status.lastSeenAt !== null : false,
+        lastSeenAt: status.ok ? status.lastSeenAt : null,
+        lastSnapshotAt: status.ok ? status.lastSnapshotAt : null,
+        pendingActions: status.ok ? status.pendingCommandCount : null,
+        pendingResults: status.ok ? status.pendingActionCount : null,
+        diagnostics: status.ok ? status.diagnostics ?? null : null,
+        error: status.ok ? null : status.error
+      };
+    }
+    case "arma.bridge.get_capabilities":
+      return executeActionTool(state, "bridge.get_capabilities", "read", emptyInputSchema, input);
+    case "arma.bridge.ping":
+      return executeActionTool(state, "bridge.ping", "read", emptyInputSchema, input);
+    case "arma.camera.captureClassAngles": {
+      const parsed = cameraCaptureClassAnglesToolSchema.parse(input);
+      const result = await captureClassAngles(state, parsed);
+      const payload = asRecord(result.result);
+      const runId = String(payload.run_id ?? payload.runId ?? parsed.runId ?? `capture_${Date.now().toString(36)}`);
+      const screenshots = normalizeScreenshotArtifacts(parsed.className, undefined, asScreenshotRows(payload.screenshots), runId);
+      return { ...payload, screenshots };
+    }
+    case "arma.camera.createPreviewScene":
+      return executeCatalogActionTool(state, "camera.createPreviewScene", cameraPreviewSceneToolSchema, input);
+    case "arma.camera.inspectClass":
+      return inspectClassWithCamera(state, input);
+    case "arma.catalog.scanStart":
+      return startCatalogScanTool(state, catalogScanToolSchema.parse(input)).then(extractJsonToolResult);
+    case "arma.catalog.scanStatus": {
+      const parsed = catalogScanStatusToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => {
+        markStaleScans(catalogDb);
+        const scanId = parsed.scanId ?? latestScanId(catalogDb);
+        return {
+          ok: true,
+          activeJobs: [...catalogScanJobs.keys()],
+          scan: scanId ? getScanProgress(catalogDb, scanId) : null,
+          catalog: getCatalogStatus(catalogDb)
+        };
+      });
+    }
+    case "arma.catalog.scanPoll": {
+      const parsed = catalogScanPollToolSchema.parse(input);
+      const scanId = parsed.scanId ?? (await withCatalogDb((catalogDb) => latestScanId(catalogDb)));
+      return scanId
+        ? pollCatalogScan(state, scanId, parsed.maxChunks, parsed.maxRuntimeMs, parsed.timeoutMs)
+        : { ok: false, error: { code: "no_scan_available" } };
+    }
+    case "arma.catalog.scanCancel": {
+      const parsed = catalogScanCancelToolSchema.parse(input);
+      const job = catalogScanJobs.get(parsed.scanId);
+      if (job) {
+        job.cancelRequested = true;
+      }
+      return withCatalogDb((catalogDb) => {
+        markScanFinished(catalogDb, parsed.scanId, "cancelled");
+        return { ok: true, scan: getScanProgress(catalogDb, parsed.scanId) };
+      });
+    }
+    case "arma.catalog.scanFinalize": {
+      const parsed = catalogScanFinalizeToolSchema.parse(input);
+      const scanId = parsed.scanId ?? (await withCatalogDb((catalogDb) => latestScanId(catalogDb)));
+      return scanId ? finalizeCatalogScan(state, scanId, parsed.timeoutMs) : { ok: false, error: { code: "no_scan_available" } };
+    }
+    case "arma.catalog.scanRepair": {
+      const parsed = catalogScanStatusToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => {
+        markStaleScans(catalogDb, 1);
+        const scanId = parsed.scanId ?? latestScanId(catalogDb);
+        return scanId ? repairStaleScan(catalogDb, scanId) : { ok: false, error: "no_scan_available" };
+      });
+    }
+    case "arma.catalog.search": {
+      const parsed = catalogSearchToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => {
+        const searchInput = {
+          query: parsed.query,
+          kind: parsed.kind,
+          tags: parsed.tags,
+          visualTags: parsed.visual_tags,
+          limit: parsed.limit
+        };
+        const results = searchCatalogClasses(catalogDb, searchInput);
+        return { results, diagnostics: getCatalogSearchDiagnostics(catalogDb, searchInput, results.length) };
+      });
+    }
+    case "arma.catalog.status":
+      emptyInputSchema.parse(input);
+      return withCatalogDb((catalogDb) => ({ ok: true, catalog: getCatalogStatus(catalogDb) }));
+    case "arma.composition.plan": {
+      const parsed = compositionPlanToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => {
+        const classNames =
+          parsed.classes && parsed.classes.length > 0
+            ? parsed.classes
+            : recommendCatalogRole(catalogDb, parsed.role ?? "objective_terminal", 10).map((item) => String(item.class_name));
+        return { plan: createDataOnlyCompositionPlan(catalogDb, parsed.name, classNames, parsed.anchor, parsed.role) };
+      });
+    }
+    case "arma.eden.apply_composition":
+      return executeActionTool(state, "eden.apply_composition", "write", applyCompositionToolSchema, input);
+    case "arma.eden.batch":
+      return executeActionTool(state, "eden.batch", "write", batchToolSchema, input);
+    case "arma.eden.create_entity":
+      return executeActionTool(state, "eden.create_entity", "write", createEntityToolSchema, input);
+    case "arma.eden.find_entities":
+      return executeActionTool(state, "eden.find_entities", "read", entityListToolSchema, input);
+    case "arma.eden.generate_aa_site":
+      return generateAaSite(siteGeneratorSchema.parse(input));
+    case "arma.eden.generate_cover_line":
+      return generateCoverLine(lineGeneratorSchema.parse(input));
+    case "arma.eden.generate_lz":
+      return generateLz(siteGeneratorSchema.parse(input));
+    case "arma.eden.generate_prop_wall":
+      return generatePropWall(lineGeneratorSchema.parse(input));
+    case "arma.eden.generate_road_checkpoint":
+      return generateRoadCheckpoint(roadCheckpointGeneratorSchema.parse(input));
+    case "arma.eden.generate_small_outpost":
+      return generateSmallOutpost(smallOutpostGeneratorSchema.parse(input));
+    case "arma.eden.listPlaced": {
+      const parsed = entityListToolSchema.parse(input);
+      const result = await dispatchCatalogAction(state, "eden.list_entities", parsed, 60_000);
+      return withCatalogDb((catalogDb) => enrichEdenResult(catalogDb, result.result));
+    }
+    case "arma.eden.list_entities":
+      return executeActionTool(state, "eden.list_entities", "read", entityListToolSchema, input);
+    case "arma.eden.set_entity_transform":
+      return executeActionTool(state, "eden.set_entity_transform", "write", setEntityTransformToolSchema, input);
+    case "arma.eden.validate_plan":
+      return executeActionTool(state, "eden.validate_plan", "read", validatePlanToolSchema, input);
+    case "arma.terrain.sample_area":
+      return executeActionTool(state, "terrain.sample_area", "read", terrainSampleAreaToolSchema, input);
+    case "arma.visual.inspectClass":
+      return inspectClassVisually(state, input);
+    case "arma_queue_apply_plan": {
+      const parsed = queueApplyPlanInputSchema.parse(input);
+      if (parsed.plan.dryRun) {
+        throw new Error("Refusing to queue a dry-run plan; set dryRun=false after review.");
+      }
+      const unsupported = validateCheckpointClasses(parsed.plan);
+      if (unsupported.length > 0) {
+        throw new Error(`Unsupported MVP classname(s): ${unsupported.join(", ")}`);
+      }
+      const command = await state.queueApplyPlan(parsed.plan);
+      return { queued: true, commandId: command.id };
+    }
+    case "arma_request_editor_snapshot": {
+      const parsed = requestSnapshotInputSchema.parse(input);
+      const command = await state.queueSnapshotRequest(parsed.scope);
+      return { queued: true, commandId: command.id };
+    }
+  }
+}
+
+async function executeCatalogActionTool<T extends z.ZodObject<z.ZodRawShape>>(
+  state: ArmaMcpState,
+  actionName: ArmaMcpActionName,
+  inputSchema: T,
+  input: unknown
+): Promise<unknown> {
+  const parsed = inputSchema.parse(input);
+  const result = await dispatchCatalogAction(state, actionName, parsed, "timeoutMs" in parsed ? Number(parsed.timeoutMs) : 60_000);
+  return result.result;
+}
+
+async function inspectClassWithCamera(state: ArmaMcpState, input: unknown): Promise<unknown> {
+  const parsed = cameraCaptureClassAnglesToolSchema.parse(input);
+  return withCatalogDb(async (catalogDb) => {
+    const runId = createVisualInspectionRun(catalogDb, {
+      className: parsed.className,
+      status: "running",
+      angles: parsed.angles,
+      screenshotDir: screenshotCacheDir(parsed.className),
+      resolution: [0, 0]
+    });
+    const result = await captureClassAngles(state, parsed, runId);
+    const screenshots = storeCapturedScreenshots(catalogDb, parsed.className, runId, asRecord(result.result));
+    const failed = screenshots.filter((shot) => shot.captured === false);
+    finishVisualInspectionRun(
+      catalogDb,
+      runId,
+      failed.length > 0 ? "partial" : "complete",
+      failed.length > 0 ? "one_or_more_screenshots_failed" : null
+    );
+    return { ...asRecord(result.result), inspectionRunId: runId, screenshots };
+  });
+}
+
+async function inspectClassVisually(state: ArmaMcpState, input: unknown): Promise<unknown> {
+  const parsed = visualInspectClassToolSchema.parse(input);
+  return withCatalogDb((catalogDb) => {
+    const catalogClass = getCatalogClass(catalogDb, parsed.className);
+    if (!catalogClass) {
+      throw new Error(`Class ${parsed.className} is not present in the local catalog cache`);
+    }
+    if (!parsed.force && !isSafeToMeasure(catalogClass)) {
+      throw new Error(`Class ${parsed.className} is not safe for visual inspection without force=true`);
+    }
+    const screenshotDir = screenshotCacheDir(parsed.className);
+    mkdirSync(screenshotDir, { recursive: true });
+    const runId = createVisualInspectionRun(catalogDb, {
+      className: parsed.className,
+      status: "running",
+      angles: parsed.angles,
+      screenshotDir,
+      resolution: parsed.resolution
+    });
+    return captureClassAngles(state, { ...parsed, runId: String(runId) }, runId).then((result) => {
+      const screenshots = storeCapturedScreenshots(catalogDb, parsed.className, runId, asRecord(result.result));
+      const failed = screenshots.filter((shot) => shot.captured === false);
+      finishVisualInspectionRun(
+        catalogDb,
+        runId,
+        failed.length > 0 ? "partial" : "complete",
+        failed.length > 0 ? "one_or_more_screenshots_failed" : null
+      );
+      return {
+        ...asRecord(result.result),
+        ok: failed.length === 0,
+        inspectionRunId: runId,
+        screenshotDir,
+        screenshots
+      };
+    });
+  });
+}
+
 function registerActionTool<T extends z.ZodObject<z.ZodRawShape>>(
   server: McpServer,
   state: ArmaMcpState,
@@ -2158,39 +2477,53 @@ function registerActionTool<T extends z.ZodObject<z.ZodRawShape>>(
       inputSchema: inputSchema.shape
     },
     async (input) => {
-      const parsed = inputSchema.parse(input);
-      const policy = enforceToolPolicy({
-        action: actionName,
-        dryRun: "dryRun" in parsed ? parsed.dryRun === true : false,
-        confirmation:
-          "confirmation" in parsed && parsed.confirmation && typeof parsed.confirmation === "object"
-            ? (parsed.confirmation as { confirmed: boolean; reason: string })
-            : undefined,
-        attributes:
-          "attributes" in parsed && parsed.attributes && typeof parsed.attributes === "object" && !Array.isArray(parsed.attributes)
-            ? (parsed.attributes as Record<string, unknown>)
-            : undefined,
-        operations: "operations" in parsed && Array.isArray(parsed.operations) ? parsed.operations : undefined
-      });
-      const queued = state.queueAction({
-        action: actionName,
-        mode,
-        params: policy.warnings.length > 0 ? { ...parsed, policyWarnings: policy.warnings } : parsed,
-        dryRun: "dryRun" in parsed && parsed.dryRun === true,
-        requiresConfirmation: "confirmation" in parsed && confirmationSchema.safeParse(parsed.confirmation).success,
-        context: {
-          confirmationConfirmed:
-            "confirmation" in parsed &&
-            typeof parsed.confirmation === "object" &&
-            parsed.confirmation !== null &&
-            "confirmed" in parsed.confirmation &&
-            parsed.confirmation.confirmed === true
-        }
-      });
-      const result = await queued.result;
-      return jsonToolResult(result.result ?? result);
+      return jsonToolResult(await executeActionTool(state, actionName, mode, inputSchema, input));
     }
   );
+}
+
+async function executeActionTool<T extends z.ZodObject<z.ZodRawShape>>(
+  state: ArmaMcpState,
+  actionName: ArmaMcpActionName,
+  mode: ArmaMcpActionMode,
+  inputSchema: T,
+  input: unknown
+): Promise<unknown> {
+  const parsed = inputSchema.parse(input);
+  const policy = enforceToolPolicy({
+    action: actionName,
+    dryRun: "dryRun" in parsed ? parsed.dryRun === true : false,
+    confirmation:
+      "confirmation" in parsed && parsed.confirmation && typeof parsed.confirmation === "object"
+        ? (parsed.confirmation as { confirmed: boolean; reason: string })
+        : undefined,
+    attributes:
+      "attributes" in parsed && parsed.attributes && typeof parsed.attributes === "object" && !Array.isArray(parsed.attributes)
+        ? (parsed.attributes as Record<string, unknown>)
+        : undefined,
+    operations: "operations" in parsed && Array.isArray(parsed.operations) ? parsed.operations : undefined
+  });
+  const queued = state.queueAction({
+    action: actionName,
+    mode,
+    params: policy.warnings.length > 0 ? { ...parsed, policyWarnings: policy.warnings } : parsed,
+    dryRun: "dryRun" in parsed && parsed.dryRun === true,
+    requiresConfirmation: "confirmation" in parsed && confirmationSchema.safeParse(parsed.confirmation).success,
+    context: {
+      confirmationConfirmed:
+        "confirmation" in parsed &&
+        typeof parsed.confirmation === "object" &&
+        parsed.confirmation !== null &&
+        "confirmed" in parsed.confirmation &&
+        parsed.confirmation.confirmed === true
+    }
+  });
+  const result = await queued.result;
+  return result.result ?? result;
+}
+
+function extractJsonToolResult(result: ReturnType<typeof jsonToolResult>): unknown {
+  return JSON.parse(result.content[0].text);
 }
 
 function jsonToolResult(value: unknown) {

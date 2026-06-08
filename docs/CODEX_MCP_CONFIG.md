@@ -83,6 +83,12 @@ the Codex MCP host to reconnect the stdio server. A healthy stdio reuse process
 will report `mode: "stdio-existing-bridge"` and `ownsHttpListener: false` from
 `arma.ping`, `arma.bridge.get_status`, or `arma.bridge.diagnostics`.
 
+If direct stdio `tools/list` shows the full table but the Codex-managed
+namespace omits individual tools, restart/reload the Codex MCP host. While that
+managed registry is stale, `arma_discovery` and `arma_call` provide an
+allowlisted fallback for the PLAN-002 discovery-gap tools without exposing raw
+SQF or shell execution.
+
 If Eden stops polling after a bridge restart, restart or reload Arma Eden after
 the HTTP bridge is already listening. The direct HTTP bridge remains a useful
 diagnostic fallback while the managed Codex MCP host is stale, but keep bearer

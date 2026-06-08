@@ -354,6 +354,9 @@ helpers, terrain sampling, and procedural generators. Useful starting tools are:
   \item \code{arma.catalog.scanCancel}: cancel a running catalog scan.
   \item \code{arma.catalog.scanFinalize}: finish a completed bounded scan.
   \item \code{arma.catalog.scanRepair}: repair stale scan bookkeeping.
+  \item \code{arma\_discovery} and \code{arma\_call}: list and call an
+        allowlisted fallback surface when a Codex-managed session omits
+        individual tools that direct stdio exposes.
 \end{itemize}
 
 Legacy MVP aliases remain available for compatibility:
@@ -376,6 +379,9 @@ Legacy MVP aliases remain available for compatibility:
   \item Confirm the Codex MCP config path is absolute and points to this repo.
   \item Confirm \code{ARMA\_MCP\_TOKEN} is set in the MCP server environment.
   \item Check sidecar stderr logs.
+  \item If direct stdio exposes tools that Codex-managed discovery omits,
+        restart/reload the Codex MCP host; use \code{arma\_discovery} and
+        \code{arma\_call} as the bounded fallback while the registry is stale.
 \end{itemize}
 
 \subsection{\code{arma\_ping} Works But Eden Is Not Connected}
