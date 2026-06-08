@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { generateCheckpointPlan } from "./checkpointPlanner.js";
@@ -34,7 +34,8 @@ import {
 import { generateAaSite, generateCoverLine, generateLz, generatePropWall, generateRoadCheckpoint, generateSmallOutpost } from "./generators.js";
 import { isRecoverableListenError, shouldSkipHttpListen, startHttpBridge, type StartedBridge } from "./httpBridge.js";
 import { logger } from "./log.js";
-import { MCP_DISCOVERY_FALLBACK_TOOL_NAMES, pruneTerminalCatalogScanJobIds } from "./mcpServer.js";
+import { MCP_DISCOVERY_FALLBACK_TOOL_NAMES, pruneTerminalCatalogScanJobIds, recommendCatalogRole } from "./mcpServer.js";
+import { mirrorProfileScreenshot } from "./screenshotPaths.js";
 import { createRemoteBridgeState } from "./remoteBridgeState.js";
 import { compositionPlanSchema } from "./schema.js";
 import { createState } from "./state.js";
@@ -201,6 +202,40 @@ describe("catalog database", () => {
         process.env.ARMA_MCP_SCREENSHOT_SOURCE_DIR = oldSourceDir;
       }
       closeCatalogDb(catalog);
+    }
+  });
+
+  it("does not mark zero-byte screenshots as copied into cache", () => {
+    const oldSourceDir = process.env.ARMA_MCP_SCREENSHOT_SOURCE_DIR;
+    const oldTimeout = process.env.ARMA_MCP_SCREENSHOT_READY_TIMEOUT_MS;
+    const dir = mkdtempSync(join(tmpdir(), "arma-mcp-screenshots-"));
+    tempDirs.push(dir);
+    try {
+      process.env.ARMA_MCP_SCREENSHOT_SOURCE_DIR = dir;
+      process.env.ARMA_MCP_SCREENSHOT_READY_TIMEOUT_MS = "0";
+      mkdirSync(join(dir, "arma-mcp", "run"), { recursive: true });
+      writeFileSync(join(dir, "arma-mcp", "run", "empty.png"), "");
+
+      expect(mirrorProfileScreenshot("arma-mcp/run/empty.png", join(dir, "cache", "empty.png"))).toMatchObject({
+        copied: false,
+        warning: expect.stringContaining("source_png_empty")
+      });
+
+      writeFileSync(join(dir, "arma-mcp", "run", "full.png"), "png-bytes");
+      expect(mirrorProfileScreenshot("arma-mcp/run/full.png", join(dir, "cache", "full.png"))).toMatchObject({
+        copied: true
+      });
+    } finally {
+      if (oldSourceDir === undefined) {
+        delete process.env.ARMA_MCP_SCREENSHOT_SOURCE_DIR;
+      } else {
+        process.env.ARMA_MCP_SCREENSHOT_SOURCE_DIR = oldSourceDir;
+      }
+      if (oldTimeout === undefined) {
+        delete process.env.ARMA_MCP_SCREENSHOT_READY_TIMEOUT_MS;
+      } else {
+        process.env.ARMA_MCP_SCREENSHOT_READY_TIMEOUT_MS = oldTimeout;
+      }
     }
   });
 
@@ -397,19 +432,179 @@ describe("catalog database", () => {
             editor_category: "EdCat_Props",
             editor_subcategory: "EdSubcat_Electronics",
             model_path: "\\a3\\props_f\\console.p3d"
+          },
+          {
+            class_name: "MainTurret",
+            display_name: "",
+            scope: 2
+          },
+          {
+            class_name: "ACE_Medical_Menu",
+            display_name: "Medical Menu",
+            scope: 2
           }
         ]
       });
       expect(ingested).toBe(2);
       expect(getCatalogClass(catalog, "HitPoints")).toBeNull();
+      expect(getCatalogClass(catalog, "MainTurret")).toBeNull();
+      expect(getCatalogClass(catalog, "ACE_Medical_Menu")).toBeNull();
       expect(getCatalogClass(catalog, "ModuleFuel_F")).toMatchObject({ kind: "module" });
       expect(searchCatalogClasses(catalog, { tags: ["command_terminal"] })[0]).toMatchObject({
+        class_name: "Land_Command_Console_F"
+      });
+      expect(searchCatalogClasses(catalog, { query: "console", kind: "prop" })[0]).toMatchObject({
         class_name: "Land_Command_Console_F"
       });
     } finally {
       closeCatalogDb(catalog);
     }
   });
+
+  it("keeps package rows out of default cached asset search results", () => {
+    const catalog = openCatalogDb(tempCatalogPath());
+    try {
+      ensureCatalogSchema(catalog);
+      writeScanManifest(catalog, {
+        scanId: "scan_laat",
+        loadedModsHash: "mods",
+        loadedAddonsHash: "addons",
+        status: "complete"
+      });
+      upsertCatalogClass(catalog, {
+        className: "3AS_LAAT",
+        latestScanId: "scan_laat",
+        configPath: "CfgPatches",
+        displayName: "",
+        kind: "config",
+        tags: ["config", "republic"]
+      });
+      updateFtsIndex(catalog, "3AS_LAAT");
+
+      expect(searchCatalogClasses(catalog, { query: "LAAT" })).toEqual([]);
+      expect(searchCatalogClasses(catalog, { query: "LAAT", kind: "config" })[0]).toMatchObject({
+        class_name: "3AS_LAAT"
+      });
+    } finally {
+      closeCatalogDb(catalog);
+    }
+  });
+
+  it("falls back from console text to terminal-tagged cached assets", () => {
+    const catalog = openCatalogDb(tempCatalogPath());
+    try {
+      ensureCatalogSchema(catalog);
+      writeScanManifest(catalog, {
+        scanId: "scan_terminal",
+        loadedModsHash: "mods",
+        loadedAddonsHash: "addons",
+        status: "complete"
+      });
+      upsertCatalogClass(catalog, {
+        className: "Land_Airport_center_F",
+        latestScanId: "scan_terminal",
+        configPath: "CfgVehicles",
+        displayName: "Airport Terminal",
+        kind: "prop",
+        subkind: "terminal",
+        modelPath: "\\a3\\structures_f\\airport_center.p3d",
+        scope: 2,
+        tags: ["prop", "terminal"]
+      });
+      upsertClassTags(catalog, "Land_Airport_center_F", [{ tag: "terminal", confidence: 0.9 }]);
+      updateFtsIndex(catalog, "Land_Airport_center_F");
+
+      expect(searchCatalogClasses(catalog, { query: "console", kind: "prop" })[0]).toMatchObject({
+        class_name: "Land_Airport_center_F"
+      });
+    } finally {
+      closeCatalogDb(catalog);
+    }
+  });
+
+
+  it("prefers medical-tagged assets over broad supply role results", () => {
+    const catalog = openCatalogDb(tempCatalogPath());
+    try {
+      ensureCatalogSchema(catalog);
+      writeScanManifest(catalog, {
+        scanId: "scan_medical",
+        loadedModsHash: "mods",
+        loadedAddonsHash: "addons",
+        status: "complete"
+      });
+      for (const item of [
+        { className: "Box_Ammo_F", displayName: "Ammo Supply Box", tags: ["supply", "ammo_crate"] },
+        { className: "3AS_Medical_Bed", displayName: "Medical Bed", tags: ["prop", "medical"] }
+      ]) {
+        upsertCatalogClass(catalog, {
+          className: item.className,
+          latestScanId: "scan_medical",
+          configPath: "CfgVehicles",
+          displayName: item.displayName,
+          kind: "prop",
+          modelPath: "\\a3\\props_f\\placeholder.p3d",
+          scope: 2,
+          tags: item.tags
+        });
+        upsertClassTags(
+          catalog,
+          item.className,
+          item.tags.map((tag) => ({ tag, confidence: 0.9 }))
+        );
+        updateFtsIndex(catalog, item.className);
+      }
+
+      expect(recommendCatalogRole(catalog, "medical", 5)[0]).toMatchObject({
+        class_name: "3AS_Medical_Bed",
+        matched_role: "medical"
+      });
+    } finally {
+      closeCatalogDb(catalog);
+    }
+  });
+
+  it("keeps object-style repair searches from defaulting to units", () => {
+    const catalog = openCatalogDb(tempCatalogPath());
+    try {
+      ensureCatalogSchema(catalog);
+      writeScanManifest(catalog, {
+        scanId: "scan_repair",
+        loadedModsHash: "mods",
+        loadedAddonsHash: "addons",
+        status: "complete"
+      });
+      for (const item of [
+        { className: "B_soldier_repair_F", displayName: "Repair Specialist", kind: "unit", tags: ["unit"] },
+        { className: "B_AssaultPack_rgr_Repair", displayName: "Repair Pack", kind: "prop", tags: ["prop", "repair"] }
+      ]) {
+        upsertCatalogClass(catalog, {
+          className: item.className,
+          latestScanId: "scan_repair",
+          configPath: "CfgVehicles",
+          displayName: item.displayName,
+          kind: item.kind,
+          modelPath: "\\a3\\props_f\\placeholder.p3d",
+          scope: 2,
+          tags: item.tags
+        });
+        upsertClassTags(
+          catalog,
+          item.className,
+          item.tags.map((tag) => ({ tag, confidence: 0.9 }))
+        );
+        updateFtsIndex(catalog, item.className);
+      }
+
+      expect(searchCatalogClasses(catalog, { query: "repair" }).map((item) => item.class_name)).toEqual(["B_AssaultPack_rgr_Repair"]);
+      expect(searchCatalogClasses(catalog, { query: "repair", kind: "unit" })[0]).toMatchObject({
+        class_name: "B_soldier_repair_F"
+      });
+    } finally {
+      closeCatalogDb(catalog);
+    }
+  });
+
 
   it("lets prop searches find placeable sandbag-style fortifications", () => {
     const catalog = openCatalogDb(tempCatalogPath());
@@ -467,7 +662,12 @@ describe("managed MCP discovery fallback", () => {
       "arma.camera.captureClassAngles",
       "arma.camera.createPreviewScene",
       "arma.camera.inspectClass",
+      "arma_catalog_find_by_role",
+      "arma_catalog_get_class",
+      "arma_catalog_search",
+      "arma_catalog_status",
       "arma_composition_plan",
+      "arma_eden_list_placed",
       "arma_visual_inspect_class",
       "arma.eden.inspectClass",
       "arma.eden.planComposition",

@@ -93,6 +93,9 @@ For managed discovery contexts that surface simpler underscore names more
 reliably than dotted names, `arma_visual_inspect_class` aliases
 `arma.visual.inspectClass`, and `arma_composition_plan` aliases
 `arma.composition.plan`.
+The sidecar also exposes discovery-friendly aliases for common PLAN-002 reads:
+`arma_catalog_status`, `arma_catalog_search`, `arma_catalog_get_class`,
+`arma_catalog_find_by_role`, and `arma_eden_list_placed`.
 
 If Eden stops polling after a bridge restart, restart or reload Arma Eden after
 the HTTP bridge is already listening. The direct HTTP bridge remains a useful

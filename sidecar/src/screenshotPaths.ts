@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,8 +30,14 @@ export function mirrorProfileScreenshot(profileRelativePath: string, targetPath:
   if (sourcePath !== resolvedRoot && !sourcePath.startsWith(`${resolvedRoot}${sep}`)) {
     return { copied: false, warning: "profile_relative_path_escaped_source_root" };
   }
-  if (!waitForFile(sourcePath, 3_000)) {
+  const ready = waitForReadyFile(sourcePath, screenshotReadyTimeoutMs());
+  if (!ready.exists) {
+    rmSync(targetPath, { force: true });
     return { copied: false, warning: `source_png_not_found:${sourcePath}` };
+  }
+  if (!ready.nonEmpty) {
+    rmSync(targetPath, { force: true });
+    return { copied: false, warning: `source_png_empty:${sourcePath}` };
   }
   mkdirSync(dirname(targetPath), { recursive: true });
   copyFileSync(sourcePath, targetPath);
@@ -96,15 +102,50 @@ function profileScreenshotDirs(root: string): string[] {
   }
 }
 
-function waitForFile(path: string, timeoutMs: number): boolean {
+function waitForReadyFile(path: string, timeoutMs: number): { exists: boolean; nonEmpty: boolean } {
   const deadline = Date.now() + timeoutMs;
+  let lastSize = -1;
+  let stableNonEmptyTicks = 0;
   while (Date.now() <= deadline) {
     if (existsSync(path)) {
-      return true;
+      const size = fileSize(path);
+      if (size > 0) {
+        if (size === lastSize) {
+          stableNonEmptyTicks += 1;
+          if (stableNonEmptyTicks >= 2) {
+            return { exists: true, nonEmpty: true };
+          }
+        } else {
+          lastSize = size;
+          stableNonEmptyTicks = 0;
+        }
+      } else {
+        lastSize = size;
+        stableNonEmptyTicks = 0;
+      }
     }
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
   }
-  return false;
+  if (!existsSync(path)) {
+    return { exists: false, nonEmpty: false };
+  }
+  return { exists: true, nonEmpty: fileSize(path) > 0 };
+}
+
+function fileSize(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
+function screenshotReadyTimeoutMs(): number {
+  const parsed = Number(process.env.ARMA_MCP_SCREENSHOT_READY_TIMEOUT_MS ?? 5_000);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return 5_000;
+  }
+  return Math.min(Math.trunc(parsed), 30_000);
 }
 
 function safePathSegment(input: string): string {

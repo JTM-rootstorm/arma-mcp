@@ -72,7 +72,7 @@ See [docs/CODEX_MCP_CONFIG.md](docs/CODEX_MCP_CONFIG.md).
 2. Start the sidecar directly with `node sidecar/dist/index.js`, or start one bridge with `npm run dev:http` and point Codex MCP at it with `ARMA_MCP_SKIP_HTTP_LISTEN=1`.
 3. Build/load the addon with HEMTT.
 4. Open Eden and select an object.
-5. Use `arma.ping`, `arma.bridge.diagnostics`, `arma.bridge.get_status`, `arma.bridge.get_capabilities`, and the Eden read/write tools to inspect, dry-run, apply, and re-read changes. If a Codex-managed session omits individual dotted tool names, use `arma_discovery` to list fallback coverage, `arma_call` with an allowlisted `toolName`, or the discovery-friendly `arma_visual_inspect_class` and `arma_composition_plan` aliases.
+5. Use `arma.ping`, `arma.bridge.diagnostics`, `arma.bridge.get_status`, `arma.bridge.get_capabilities`, and the Eden read/write tools to inspect, dry-run, apply, and re-read changes. If a Codex-managed session omits individual dotted tool names, use `arma_discovery` to list fallback coverage, `arma_call` with an allowlisted `toolName`, or the discovery-friendly aliases such as `arma_catalog_search`, `arma_visual_inspect_class`, and `arma_composition_plan`.
 
 See [docs/EDEN_TESTING.md](docs/EDEN_TESTING.md).
 

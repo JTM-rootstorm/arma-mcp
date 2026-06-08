@@ -154,19 +154,76 @@ export type CatalogSearchInput = {
 };
 
 export function searchCatalogClasses(catalogDb: CatalogDb, input: CatalogSearchInput): Record<string, unknown>[] {
+  const primary = searchCatalogClassesOnce(catalogDb, input);
+  if (primary.length > 0 || !input.query?.trim()) {
+    return primary;
+  }
+  const tagFallback = searchQueryFallbackTags(catalogDb, input);
+  if (tagFallback.length > 0) {
+    return tagFallback;
+  }
+  return searchCatalogClassesOnce(catalogDb, input, true);
+}
+
+function searchQueryFallbackTags(catalogDb: CatalogDb, input: CatalogSearchInput): Record<string, unknown>[] {
+  const query = input.query?.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const fallbackTags: Record<string, string[]> = {
+    console: ["console", "command_terminal", "objective_terminal", "terminal"],
+    terminal: ["terminal", "command_terminal", "objective_terminal"],
+    medical: ["medical", "medical_crate"],
+    medic: ["medical", "medical_crate"],
+    turret: ["static_weapon"],
+    repair: ["repair"]
+  };
+  const tags = query ? fallbackTags[query] ?? [] : [];
+  const seen = new Set<string>();
+  const results: Record<string, unknown>[] = [];
+  for (const tag of tags) {
+    for (const item of searchCatalogClassesOnce(catalogDb, { ...input, query: undefined, tags: [...(input.tags ?? []), tag] })) {
+      const className = String(item.class_name);
+      if (!seen.has(className)) {
+        seen.add(className);
+        results.push(item);
+      }
+      if (results.length >= Math.max(1, Math.min(input.limit ?? 25, 100))) {
+        return results;
+      }
+    }
+  }
+  return results;
+}
+
+function searchCatalogClassesOnce(catalogDb: CatalogDb, input: CatalogSearchInput, useLikeFallback = false): Record<string, unknown>[] {
   const limit = Math.max(1, Math.min(input.limit ?? 25, 100));
   const filters: string[] = [];
   const values: Array<string | number | null> = [];
   let from = "classes";
   const expandedKinds = expandKindFilter(input.kind, input);
   if (input.query?.trim()) {
-    from = "classes_fts JOIN classes ON classes.rowid = classes_fts.rowid";
-    filters.push("classes_fts MATCH ?");
-    values.push(input.query.trim());
+    if (useLikeFallback) {
+      const query = input.query.trim().toLowerCase();
+      filters.push(
+        `(LOWER(classes.class_name) LIKE ? OR LOWER(classes.display_name) LIKE ? OR LOWER(classes.tags_json) LIKE ? OR LOWER(classes.model_path) LIKE ?)`
+      );
+      values.push(`%${query}%`, `%${query}%`, `%${query}%`, `%${query}%`);
+    } else {
+      from = "classes_fts JOIN classes ON classes.rowid = classes_fts.rowid";
+      filters.push("classes_fts MATCH ?");
+      values.push(input.query.trim());
+    }
   }
   if (expandedKinds.length > 0) {
     filters.push(`classes.kind IN (${expandedKinds.map(() => "?").join(", ")})`);
     values.push(...expandedKinds);
+  }
+  if (!input.kind || expandedKinds.some((kind) => ["prop", "fortification", "structure", "supply", "decor", "vehicle"].includes(kind))) {
+    filters.push("classes.config_path != 'CfgPatches'");
+    filters.push(
+      `(classes.kind IN ('vehicle', 'module', 'logic') OR (classes.display_name IS NOT NULL AND classes.display_name != '' AND classes.model_path IS NOT NULL AND classes.model_path != ''))`
+    );
+  }
+  if (!input.kind && isObjectAssetQuery(input.query)) {
+    filters.push("classes.kind != 'unit'");
   }
   for (const tag of input.tags ?? []) {
     filters.push(
@@ -225,6 +282,11 @@ export function searchCatalogClasses(catalogDb: CatalogDb, input: CatalogSearchI
     )
     .all(...values);
   return rows.map((row) => formatCatalogSearchRow(row as CatalogSearchRow));
+}
+
+function isObjectAssetQuery(query: string | undefined): boolean {
+  const normalized = query?.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return Boolean(normalized && ["console", "terminal", "medical", "medic", "repair", "turret"].includes(normalized));
 }
 
 export function getCatalogSearchDiagnostics(

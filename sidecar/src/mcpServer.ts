@@ -72,7 +72,12 @@ export const MCP_DISCOVERY_FALLBACK_TOOL_NAMES = [
   "arma.camera.captureClassAngles",
   "arma.camera.createPreviewScene",
   "arma.camera.inspectClass",
+  "arma_catalog_find_by_role",
+  "arma_catalog_get_class",
+  "arma_catalog_search",
+  "arma_catalog_status",
   "arma_composition_plan",
+  "arma_eden_list_placed",
   "arma_visual_inspect_class",
   "arma.eden.inspectClass",
   "arma.eden.planComposition",
@@ -1254,6 +1259,73 @@ function registerEdenInspectionAliasTools(server: McpServer, state: ArmaMcpState
 
 function registerPriorityEdenWorkflowTools(server: McpServer, state: ArmaMcpState): void {
   server.registerTool(
+    "arma_catalog_status",
+    {
+      title: "Catalog Status",
+      description: "Discovery-friendly alias for cached catalog status.",
+      inputSchema: emptyInputSchema.shape
+    },
+    async () => withCatalogDb((catalogDb) => jsonToolResult({ ok: true, catalog: getCatalogStatus(catalogDb) }))
+  );
+
+  server.registerTool(
+    "arma_catalog_search",
+    {
+      title: "Search Catalog",
+      description: "Discovery-friendly alias for cached catalog search.",
+      inputSchema: catalogSearchToolSchema.shape
+    },
+    async (input) => {
+      const parsed = catalogSearchToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => {
+        const searchInput = { query: parsed.query, kind: parsed.kind, tags: parsed.tags, visualTags: parsed.visual_tags, limit: parsed.limit };
+        const results = searchCatalogClasses(catalogDb, searchInput);
+        return jsonToolResult({ results, diagnostics: getCatalogSearchDiagnostics(catalogDb, searchInput, results.length) });
+      });
+    }
+  );
+
+  server.registerTool(
+    "arma_catalog_get_class",
+    {
+      title: "Get Catalog Class",
+      description: "Discovery-friendly alias for fetching one cached catalog class.",
+      inputSchema: catalogClassToolSchema.shape
+    },
+    async (input) => {
+      const parsed = catalogClassToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => jsonToolResult({ class: getCatalogClass(catalogDb, parsed.className) }));
+    }
+  );
+
+  server.registerTool(
+    "arma_catalog_find_by_role",
+    {
+      title: "Find Catalog Assets By Role",
+      description: "Discovery-friendly alias for role-based cached catalog search.",
+      inputSchema: catalogRoleToolSchema.shape
+    },
+    async (input) => {
+      const parsed = catalogRoleToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => jsonToolResult({ results: recommendCatalogRole(catalogDb, parsed.role, parsed.limit) }));
+    }
+  );
+
+  server.registerTool(
+    "arma_eden_list_placed",
+    {
+      title: "List Placed Eden Objects",
+      description: "Discovery-friendly alias for listing placed Eden objects.",
+      inputSchema: entityListToolSchema.shape
+    },
+    async (input) => {
+      const parsed = entityListToolSchema.parse(input);
+      const result = await dispatchCatalogAction(state, "eden.list_entities", parsed, 60_000);
+      return withCatalogDb((catalogDb) => jsonToolResult(enrichEdenResult(catalogDb, result.result)));
+    }
+  );
+
+  server.registerTool(
     "arma_visual_inspect_class",
     {
       title: "Inspect Class Visually",
@@ -2098,11 +2170,11 @@ function safePathSegment(input: string): string {
   return input.replace(/[^A-Za-z0-9_.-]+/g, "_").slice(0, 160) || "class";
 }
 
-function recommendCatalogRole(catalogDb: ReturnType<typeof openCatalogDb>, role: string, limit: number): Record<string, unknown>[] {
+export function recommendCatalogRole(catalogDb: ReturnType<typeof openCatalogDb>, role: string, limit: number): Record<string, unknown>[] {
   const roleTags = roleToTags(role);
   const seen = new Set<string>();
   const results: Record<string, unknown>[] = [];
-  for (const tag of roleTags) {
+  for (const tag of roleTags.primary) {
     for (const item of searchCatalogClasses(catalogDb, { tags: [tag], limit })) {
       const className = String(item.class_name);
       if (!seen.has(className)) {
@@ -2124,28 +2196,46 @@ function recommendCatalogRole(catalogDb: ReturnType<typeof openCatalogDb>, role:
       break;
     }
   }
+  for (const tag of roleTags.broad) {
+    for (const item of searchCatalogClasses(catalogDb, { tags: [tag], limit })) {
+      const className = String(item.class_name);
+      if (!seen.has(className)) {
+        seen.add(className);
+        results.push({ ...item, confidence: 0.45, matched_role: tag });
+      }
+      if (results.length >= limit) {
+        return results;
+      }
+    }
+  }
   return results;
 }
 
-function roleToTags(role: string): string[] {
+function roleToTags(role: string): { primary: string[]; broad: string[] } {
   const normalized = role.trim().toLowerCase().replace(/[\s-]+/g, "_");
-  const aliases: Record<string, string[]> = {
-    console: ["command_terminal", "objective_terminal", "terminal"],
-    terminal: ["command_terminal", "objective_terminal", "terminal"],
-    bunker: ["bunker", "fortification"],
-    sandbag: ["cover_low", "wall_segment", "fortification"],
-    medical: ["medical_crate", "supply"],
-    ammo: ["ammo_crate", "supply"],
-    droid: ["cis", "infantry_unit"],
-    cis: ["cis"],
-    republic: ["republic"],
-    wall: ["wall_segment", "fortification"],
-    gate: ["gate", "wall_segment"],
-    task: ["module_task", "module"],
-    respawn: ["module_respawn", "module"],
-    zeus: ["module_zeus", "module"]
+  const aliases: Record<string, { primary: string[]; broad?: string[] }> = {
+    console: { primary: ["console", "command_terminal", "objective_terminal", "terminal"] },
+    terminal: { primary: ["terminal", "command_terminal", "objective_terminal"] },
+    bunker: { primary: ["bunker"], broad: ["fortification"] },
+    sandbag: { primary: ["cover_low", "wall_segment"], broad: ["fortification"] },
+    medical: { primary: ["medical", "medical_crate"] },
+    ammo: { primary: ["ammo_crate"], broad: ["supply"] },
+    droid: { primary: ["cis", "infantry_unit"] },
+    cis: { primary: ["cis"] },
+    republic: { primary: ["republic"] },
+    wall: { primary: ["wall_segment"], broad: ["fortification"] },
+    gate: { primary: ["gate"], broad: ["wall_segment"] },
+    repair: { primary: ["repair"], broad: ["supply"] },
+    turret: { primary: ["static_weapon"] },
+    task: { primary: ["module_task"], broad: ["module"] },
+    respawn: { primary: ["module_respawn"], broad: ["module"] },
+    zeus: { primary: ["module_zeus"], broad: ["module"] }
   };
-  return [normalized, ...(aliases[normalized] ?? [])].filter((tag, index, tags) => tags.indexOf(tag) === index);
+  const mapped = aliases[normalized] ?? { primary: [] };
+  return {
+    primary: [normalized, ...mapped.primary].filter((tag, index, tags) => tags.indexOf(tag) === index),
+    broad: (mapped.broad ?? []).filter((tag, index, tags) => tags.indexOf(tag) === index)
+  };
 }
 
 function createDataOnlyCompositionPlan(
@@ -2423,6 +2513,31 @@ async function callManagedDiscoveryFallbackTool(
       return executeCatalogActionTool(state, "camera.createPreviewScene", cameraPreviewSceneToolSchema, input);
     case "arma.camera.inspectClass":
       return inspectClassWithCamera(state, input);
+    case "arma_catalog_status":
+      emptyInputSchema.parse(input);
+      return withCatalogDb((catalogDb) => ({ ok: true, catalog: getCatalogStatus(catalogDb) }));
+    case "arma_catalog_search": {
+      const parsed = catalogSearchToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => {
+        const searchInput = {
+          query: parsed.query,
+          kind: parsed.kind,
+          tags: parsed.tags,
+          visualTags: parsed.visual_tags,
+          limit: parsed.limit
+        };
+        const results = searchCatalogClasses(catalogDb, searchInput);
+        return { results, diagnostics: getCatalogSearchDiagnostics(catalogDb, searchInput, results.length) };
+      });
+    }
+    case "arma_catalog_get_class": {
+      const parsed = catalogClassToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => ({ class: getCatalogClass(catalogDb, parsed.className) }));
+    }
+    case "arma_catalog_find_by_role": {
+      const parsed = catalogRoleToolSchema.parse(input);
+      return withCatalogDb((catalogDb) => ({ results: recommendCatalogRole(catalogDb, parsed.role, parsed.limit) }));
+    }
     case "arma_visual_inspect_class":
     case "arma.eden.inspectClass":
       return inspectClassVisually(state, input);
@@ -2636,6 +2751,11 @@ async function callManagedDiscoveryFallbackTool(
     case "arma.eden.generate_small_outpost":
       return generateSmallOutpost(smallOutpostGeneratorSchema.parse(input));
     case "arma.eden.listPlaced": {
+      const parsed = entityListToolSchema.parse(input);
+      const result = await dispatchCatalogAction(state, "eden.list_entities", parsed, 60_000);
+      return withCatalogDb((catalogDb) => enrichEdenResult(catalogDb, result.result));
+    }
+    case "arma_eden_list_placed": {
       const parsed = entityListToolSchema.parse(input);
       const result = await dispatchCatalogAction(state, "eden.list_entities", parsed, 60_000);
       return withCatalogDb((catalogDb) => enrichEdenResult(catalogDb, result.result));

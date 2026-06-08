@@ -276,6 +276,7 @@ function generateClassTags(input: {
     .toLowerCase();
   for (const [tag, pattern] of [
     ["terminal", /\b(terminal|console|screen|display|monitor)\b/],
+    ["console", /\bconsole\b/],
     ["command_terminal", /\b(command|control|operations|ops).*\b(terminal|console|screen|display|monitor)\b|\b(terminal|console).*\b(command|control|operations|ops)\b/],
     ["objective_terminal", /\b(objective|intel|data|uplink|download|upload|hack).*\b(terminal|console|screen|display|monitor)\b|\b(terminal|console).*\b(objective|intel|data|uplink|download|upload|hack)\b/],
     ["republic", /\b(republic|gar|clone|laat|venator)\b/],
@@ -295,7 +296,9 @@ function generateClassTags(input: {
     ["cover_high", /\b(high wall|tall wall|bunker|hbarrier_5|cover high)\b/],
     ["supply", /\b(crate|box|supply|ammo)\b/],
     ["ammo_crate", /\b(ammo|ammunition).*\b(crate|box|supply)\b|\b(crate|box).*\b(ammo|ammunition)\b/],
+    ["medical", /\b(medical|medic|medevac|first aid|heal|stretcher|scanner)\b/],
     ["medical_crate", /\b(medical|medic|first aid|heal).*\b(crate|box|supply)\b|\b(crate|box).*\b(medical|medic|first aid|heal)\b/],
+    ["repair", /\b(repair|maintenance|service)\b/],
     ["vehicle_spawn", /\b(vehicle spawn|garage|respawn vehicle|spawn point)\b/],
     ["module_task", /\b(task|objective).*\b(module|logic)\b|\bmodule.*\b(task|objective)\b/],
     ["module_respawn", /\b(respawn|spawn).*\b(module|logic)\b|\bmodule.*\b(respawn|spawn)\b/],
@@ -333,10 +336,20 @@ function isUsefulCatalogRecord(configPath: string, record: CatalogRecord): boole
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
-  if (haystack.match(/\b(hitpoint|hitpoints|damage|glass|destructioneffects|animationsources|texture sources|reflectors|sounds|eventhandlers)\b/)) {
+  if (
+    haystack.match(
+      /\b(hitpoint|hitpoints|damage|glass|destructioneffects|animationsources|texture sources|reflectors|sounds|eventhandlers|turret|turrets|mfd|animation|texture|weapon disassembly)\b/
+    )
+  ) {
     return false;
   }
   if (!displayName && scope < 2 && scopeCurator < 2) {
+    return false;
+  }
+  if (!displayName && !modelPath) {
+    return false;
+  }
+  if (!modelPath && !haystack.match(/\b(module|logic)\b/)) {
     return false;
   }
   if (scope >= 2 || scopeCurator >= 2) {
