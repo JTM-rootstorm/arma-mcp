@@ -137,6 +137,13 @@ export const MCP_DISCOVERY_FALLBACK_TOOL_NAMES = [
   "arma.eden.set_entity_transform",
   "arma.eden.validate_plan",
   "arma.terrain.sample_area",
+  "arma.terrain.find_flat_area",
+  "arma.terrain.find_nearest_roads",
+  "arma.spatial.check_collision",
+  "arma.spatial.score_placement",
+  "arma.spatial.line_of_sight",
+  "arma.spatial.find_cover_positions",
+  "arma.spatial.find_lz_candidates",
   "arma.visual.inspectClass",
   "arma.visual.getScreenshots",
   "arma.visual.addTag",
@@ -357,7 +364,83 @@ const terrainSampleAreaToolSchema = z.object({
   radiusMeters: z.number().positive().max(500),
   spacingMeters: z.number().positive().max(100).default(10),
   includeWater: z.boolean().default(true),
-  includeSurfaceNormal: z.boolean().default(false)
+  includeSurfaceNormal: z.boolean().default(false),
+  includeSurfaceType: z.boolean().default(false),
+  includeRoads: z.boolean().default(false),
+  includeNearbyObjects: z.boolean().default(false),
+  nearbyObjectTypes: z.array(z.string().trim().min(1).max(80)).max(20).optional()
+});
+const terrainFindFlatAreaToolSchema = z.object({
+  centerATL: vector3Schema,
+  searchRadiusMeters: z.number().positive().max(2_000).default(250),
+  sampleRadiusMeters: z.number().positive().max(250).default(25),
+  spacingMeters: z.number().positive().max(100).default(10),
+  maxSlopeDeg: z.number().nonnegative().max(45).default(8),
+  allowWater: z.boolean().default(false),
+  limit: z.number().int().positive().max(50).default(10)
+});
+const terrainFindNearestRoadsToolSchema = z.object({
+  positionATL: vector3Schema,
+  radiusMeters: z.number().positive().max(5_000).default(100),
+  limit: z.number().int().positive().max(50).default(10),
+  extendedConnections: z.boolean().default(true)
+});
+const spatialPlanOperationSchema = z
+  .object({
+    clientRef: z.string().min(1).max(120).optional(),
+    className: z.string().trim().min(1).max(160).optional(),
+    type: entityTypeSchema.optional(),
+    transform: transformSchema.optional(),
+    radiusMeters: z.number().positive().max(500).optional()
+  })
+  .passthrough();
+const spatialCheckCollisionToolSchema = z.object({
+  operations: z.array(spatialPlanOperationSchema).max(250).default([]),
+  positionATL: vector3Schema.optional(),
+  radiusMeters: z.number().positive().max(500).default(5),
+  terrainObjectTypes: z.array(z.string().trim().min(1).max(80)).max(20).default(["HOUSE", "WALL", "ROCK", "TREE", "ROAD"]),
+  includeTerrainObjects: z.boolean().default(true)
+});
+const spatialScorePlacementToolSchema = z.object({
+  positionATL: vector3Schema,
+  radiusMeters: z.number().positive().max(500).default(25),
+  intendedUse: z.enum(["generic", "road_checkpoint", "lz", "aa_site", "cover", "outpost"]).default("generic"),
+  maxSlopeDeg: z.number().nonnegative().max(45).default(10),
+  requireRoad: z.boolean().default(false),
+  avoidWater: z.boolean().default(true),
+  spacingMeters: z.number().positive().max(100).default(10)
+});
+const spatialLineOfSightToolSchema = z.object({
+  fromASL: vector3Schema.optional(),
+  toASL: vector3Schema.optional(),
+  fromATL: vector3Schema.optional(),
+  toATL: vector3Schema.optional(),
+  samples: z
+    .array(
+      z.object({
+        fromASL: vector3Schema.optional(),
+        toASL: vector3Schema.optional(),
+        fromATL: vector3Schema.optional(),
+        toATL: vector3Schema.optional()
+      })
+    )
+    .max(50)
+    .optional()
+});
+const spatialFindCoverPositionsToolSchema = z.object({
+  centerATL: vector3Schema,
+  threatDirectionDeg: z.number().default(0),
+  radiusMeters: z.number().positive().max(500).default(50),
+  limit: z.number().int().positive().max(50).default(10),
+  objectTypes: z.array(z.string().trim().min(1).max(80)).max(20).default(["WALL", "ROCK", "TREE", "HOUSE", "FENCE"])
+});
+const spatialFindLzCandidatesToolSchema = z.object({
+  centerATL: vector3Schema,
+  searchRadiusMeters: z.number().positive().max(2_000).default(300),
+  lzRadiusMeters: z.number().positive().max(250).default(30),
+  spacingMeters: z.number().positive().max(100).default(25),
+  maxSlopeDeg: z.number().nonnegative().max(45).default(6),
+  limit: z.number().int().positive().max(50).default(10)
 });
 const writeBaseSchema = z.object({
   dryRun: z.boolean().default(true),
@@ -743,6 +826,69 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig,
     "read",
     terrainSampleAreaToolSchema,
     "Sample Terrain Area"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.terrain.find_flat_area",
+    "terrain.find_flat_area",
+    "read",
+    terrainFindFlatAreaToolSchema,
+    "Find Flat Terrain Area"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.terrain.find_nearest_roads",
+    "terrain.find_nearest_roads",
+    "read",
+    terrainFindNearestRoadsToolSchema,
+    "Find Nearest Roads"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.spatial.check_collision",
+    "spatial.check_collision",
+    "read",
+    spatialCheckCollisionToolSchema,
+    "Check Spatial Collision"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.spatial.score_placement",
+    "spatial.score_placement",
+    "read",
+    spatialScorePlacementToolSchema,
+    "Score Spatial Placement"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.spatial.line_of_sight",
+    "spatial.line_of_sight",
+    "read",
+    spatialLineOfSightToolSchema,
+    "Check Line Of Sight"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.spatial.find_cover_positions",
+    "spatial.find_cover_positions",
+    "read",
+    spatialFindCoverPositionsToolSchema,
+    "Find Cover Positions"
+  );
+  registerActionTool(
+    server,
+    state,
+    "arma.spatial.find_lz_candidates",
+    "spatial.find_lz_candidates",
+    "read",
+    spatialFindLzCandidatesToolSchema,
+    "Find LZ Candidates"
   );
   registerActionTool(
     server,
@@ -2936,6 +3082,20 @@ async function callManagedDiscoveryFallbackTool(
       return executeActionTool(state, "eden.validate_plan", "read", validatePlanToolSchema, input);
     case "arma.terrain.sample_area":
       return executeActionTool(state, "terrain.sample_area", "read", terrainSampleAreaToolSchema, input);
+    case "arma.terrain.find_flat_area":
+      return executeActionTool(state, "terrain.find_flat_area", "read", terrainFindFlatAreaToolSchema, input);
+    case "arma.terrain.find_nearest_roads":
+      return executeActionTool(state, "terrain.find_nearest_roads", "read", terrainFindNearestRoadsToolSchema, input);
+    case "arma.spatial.check_collision":
+      return executeActionTool(state, "spatial.check_collision", "read", spatialCheckCollisionToolSchema, input);
+    case "arma.spatial.score_placement":
+      return executeActionTool(state, "spatial.score_placement", "read", spatialScorePlacementToolSchema, input);
+    case "arma.spatial.line_of_sight":
+      return executeActionTool(state, "spatial.line_of_sight", "read", spatialLineOfSightToolSchema, input);
+    case "arma.spatial.find_cover_positions":
+      return executeActionTool(state, "spatial.find_cover_positions", "read", spatialFindCoverPositionsToolSchema, input);
+    case "arma.spatial.find_lz_candidates":
+      return executeActionTool(state, "spatial.find_lz_candidates", "read", spatialFindLzCandidatesToolSchema, input);
     case "arma.visual.inspectClass":
       return inspectClassVisually(state, input);
     case "arma.visual.getScreenshots": {

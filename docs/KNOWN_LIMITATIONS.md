@@ -3,8 +3,8 @@
 - The sidecar state is in-memory only.
 - The addon assumes current Arma 3 scripting support for `fromJSON` and `toJSON`.
 - The extension reads bearer tokens from `ArmaMCP.ini` beside the extension, with environment variables as a fallback.
-- There is no asset index, mesh parsing, collision validation, road detection, or faction-aware object catalog yet.
-- Terrain sampling is approximate and limited to grid height, water, and slope checks.
+- There is no full asset index, mesh parsing, exact collision validation, or faction-aware object catalog yet.
+- Terrain and spatial validation use grid sampling, road probes, terrain-object probes, and broad radius heuristics. Exact scores need live map smoke tests and should be treated as review guidance.
 - The procedural generators use vanilla fallback classnames.
 - Marker creation is implemented through `create3DENEntity ["Marker", ...]` and normalizes common top-level marker fields, but still needs an in-game Eden smoke test for every marker style.
 - Trigger/module/waypoint creation is available through the shared batch path but still needs a full in-game Eden smoke test for exact 3DEN attribute names.

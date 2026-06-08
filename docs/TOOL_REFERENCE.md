@@ -70,6 +70,13 @@ ArmaMCP exposes typed MCP tools. Write tools default to reviewable dry-runs wher
 - `arma.assets.search_classes`
 - `arma.assets.get_class`
 - `arma.terrain.sample_area`
+- `arma.terrain.find_flat_area`
+- `arma.terrain.find_nearest_roads`
+- `arma.spatial.check_collision`
+- `arma.spatial.score_placement`
+- `arma.spatial.line_of_sight`
+- `arma.spatial.find_cover_positions`
+- `arma.spatial.find_lz_candidates`
 - `arma.catalog.status`
 - `arma.catalog.scan`
 - `arma.catalog.scanStart`

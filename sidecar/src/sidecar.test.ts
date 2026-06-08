@@ -898,7 +898,14 @@ describe("managed MCP discovery fallback", () => {
       "arma.eden.list_entities",
       "arma.eden.set_entity_transform",
       "arma.eden.validate_plan",
+      "arma.terrain.find_flat_area",
+      "arma.terrain.find_nearest_roads",
       "arma.terrain.sample_area",
+      "arma.spatial.check_collision",
+      "arma.spatial.find_cover_positions",
+      "arma.spatial.find_lz_candidates",
+      "arma.spatial.line_of_sight",
+      "arma.spatial.score_placement",
       "arma.visual.addTag",
       "arma.visual.findByVisualTags",
       "arma.visual.getScreenshots",
@@ -975,6 +982,27 @@ describe("synthetic Eden action inventory", () => {
     for (const field of ["text", "markerType", "color", "shape", "brush", "alpha", "size", "angle"]) {
       expect(createEntity).toContain(field);
     }
+  });
+
+  it("keeps spatial actions routed through a structured SQF helper", () => {
+    const spatialOps = sqf("addons/main/functions/fn_spatialOps.sqf");
+    const dispatcher = sqf("addons/main/functions/fn_dispatchAction.sqf");
+
+    for (const [action, operation] of [
+      ["terrain.find_flat_area", "findFlatArea"],
+      ["terrain.find_nearest_roads", "findNearestRoads"],
+      ["spatial.check_collision", "checkCollision"],
+      ["spatial.score_placement", "scorePlacement"],
+      ["spatial.line_of_sight", "lineOfSight"],
+      ["spatial.find_cover_positions", "findCoverPositions"],
+      ["spatial.find_lz_candidates", "findLzCandidates"]
+    ]) {
+      expect(dispatcher).toContain(`case "${action}"`);
+      expect(spatialOps).toContain(`case "${operation}"`);
+    }
+    expect(spatialOps).toContain("blocking");
+    expect(spatialOps).toContain("warnings");
+    expect(spatialOps).toContain("score");
   });
 });
 

@@ -125,6 +125,27 @@ switch (_action) do {
     case "terrain.sample_area": {
         _result = [_params] call AMCP_fnc_sampleTerrainArea;
     };
+    case "terrain.find_flat_area": {
+        _result = ["findFlatArea", _params] call AMCP_fnc_spatialOps;
+    };
+    case "terrain.find_nearest_roads": {
+        _result = ["findNearestRoads", _params] call AMCP_fnc_spatialOps;
+    };
+    case "spatial.check_collision": {
+        _result = ["checkCollision", _params] call AMCP_fnc_spatialOps;
+    };
+    case "spatial.score_placement": {
+        _result = ["scorePlacement", _params] call AMCP_fnc_spatialOps;
+    };
+    case "spatial.line_of_sight": {
+        _result = ["lineOfSight", _params] call AMCP_fnc_spatialOps;
+    };
+    case "spatial.find_cover_positions": {
+        _result = ["findCoverPositions", _params] call AMCP_fnc_spatialOps;
+    };
+    case "spatial.find_lz_candidates": {
+        _result = ["findLzCandidates", _params] call AMCP_fnc_spatialOps;
+    };
     case "catalog.scanStart": {
         private _targets = _params getOrDefault ["targets", [
             "CfgPatches",

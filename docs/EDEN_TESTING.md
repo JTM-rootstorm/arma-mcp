@@ -96,7 +96,22 @@ arma.eden.unsync_entities
 
 Use `dryRun=true` first for writes, then repeat with `dryRun=false` after review.
 
-13. Test composition capture and apply:
+13. Test terrain and spatial validators:
+
+```text
+arma.terrain.sample_area
+arma.terrain.find_flat_area
+arma.terrain.find_nearest_roads
+arma.spatial.score_placement
+arma.spatial.check_collision
+arma.spatial.line_of_sight
+arma.spatial.find_cover_positions
+arma.spatial.find_lz_candidates
+```
+
+Try one open flat VR position, one water/steep terrain position if available, and one position near placed objects.
+
+14. Test composition capture and apply:
 
 ```text
 arma.eden.capture_composition
@@ -105,7 +120,7 @@ arma.eden.apply_composition
 
 Capture a mixed selected set. Include two synced entities if possible and call capture with `includeConnections=true`. Apply it at a nearby anchor with `dryRun=true`, then apply for real.
 
-14. Test the local procedural generators:
+15. Test the local procedural generators:
 
 ```text
 arma.eden.generate_road_checkpoint
@@ -118,7 +133,7 @@ arma.eden.generate_prop_wall
 
 Generators return dry-run batch plans only. Review and apply their `plan` through `arma.eden.batch`.
 
-15. Confirm Eden creates objects around the selected or supplied anchor. Press undo and confirm the operation rolls back if `collect3DENHistory` grouped the changes successfully.
+16. Confirm Eden creates objects around the selected or supplied anchor. Press undo and confirm the operation rolls back if `collect3DENHistory` grouped the changes successfully.
 
 The addon also attempts throttled selection snapshots via `OnSelectionChange`.
 

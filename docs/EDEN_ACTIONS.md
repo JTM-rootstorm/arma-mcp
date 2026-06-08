@@ -25,6 +25,13 @@ The Eden action suite exposes typed tools instead of raw SQF execution.
 - `arma.assets.search_classes`
 - `arma.assets.get_class`
 - `arma.terrain.sample_area`
+- `arma.terrain.find_flat_area`
+- `arma.terrain.find_nearest_roads`
+- `arma.spatial.check_collision`
+- `arma.spatial.score_placement`
+- `arma.spatial.line_of_sight`
+- `arma.spatial.find_cover_positions`
+- `arma.spatial.find_lz_candidates`
 
 Entity IDs are session-local bridge IDs. They are refreshed as entities are read and are not durable mission identifiers.
 
@@ -80,9 +87,9 @@ Generators return dry-run `arma.eden.batch` plans and do not mutate Eden directl
 - Sync tools use Eden `Sync` connections by default and can read/add/remove other 3DEN connection classes when supplied.
 - Mixed composition capture/apply preserves copied local sync links by `clientRef`.
 - Marker top-level batch fields such as `text`, `markerType`, `color`, `shape`, `size`, and `alpha` are normalized into Eden marker attributes before apply.
+- Spatial tools provide structured terrain summaries, flat-area candidates, nearest-road metadata, broad collision warnings, placement scores, LOS checks, cover candidates, and LZ candidates. They are intended to guide dry-run plan review and need live map smoke tests before relying on exact scores.
 
 ## Unsupported Or Best Effort
 
-- Collision and road-aware placement validation are not implemented.
+- Collision checks use broad radius heuristics and nearby terrain-object probes, not exact mesh collision.
 - Class search scans `CfgVehicles` at runtime and is intentionally simple until an asset index exists.
-- Terrain sampling provides height, water state, and approximate slope only.

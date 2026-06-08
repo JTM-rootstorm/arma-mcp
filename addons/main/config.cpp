@@ -46,6 +46,7 @@ class CfgFunctions {
             class sampleTerrainArea {};
             class scanConfigChunk {};
             class searchClasses {};
+            class spatialOps {};
             class startEdenBridge {};
             class validateBatch {};
         };
