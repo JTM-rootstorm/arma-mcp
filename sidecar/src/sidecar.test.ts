@@ -33,7 +33,7 @@ import {
 import { generateAaSite, generateCoverLine, generateLz, generatePropWall, generateRoadCheckpoint, generateSmallOutpost } from "./generators.js";
 import { isRecoverableListenError, shouldSkipHttpListen, startHttpBridge, type StartedBridge } from "./httpBridge.js";
 import { logger } from "./log.js";
-import { MCP_DISCOVERY_FALLBACK_TOOL_NAMES } from "./mcpServer.js";
+import { MCP_DISCOVERY_FALLBACK_TOOL_NAMES, pruneTerminalCatalogScanJobIds } from "./mcpServer.js";
 import { createRemoteBridgeState } from "./remoteBridgeState.js";
 import { compositionPlanSchema } from "./schema.js";
 import { createState } from "./state.js";
@@ -222,6 +222,23 @@ describe("catalog database", () => {
     } finally {
       closeCatalogDb(catalog);
     }
+  });
+
+  it("prunes terminal foreground catalog scan jobs from active status", () => {
+    const jobs = new Map<string, { promise?: Promise<void> }>([
+      ["running_foreground", {}],
+      ["cancelled_foreground", {}],
+      ["missing_foreground", {}],
+      ["complete_background", { promise: Promise.resolve() }]
+    ]);
+    const statuses = new Map<string, string>([
+      ["running_foreground", "running"],
+      ["cancelled_foreground", "cancelled"],
+      ["complete_background", "complete"]
+    ]);
+
+    expect(pruneTerminalCatalogScanJobIds(jobs, (scanId) => statuses.get(scanId))).toEqual(["running_foreground"]);
+    expect([...jobs.keys()]).toEqual(["running_foreground"]);
   });
 
   it("keeps cancelled scan target status sticky after late progress writes", () => {

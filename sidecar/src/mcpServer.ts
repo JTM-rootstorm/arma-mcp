@@ -111,6 +111,7 @@ type CatalogScanJob = {
   promise?: Promise<void>;
 };
 const catalogScanJobs = new Map<string, CatalogScanJob>();
+const terminalCatalogScanStatuses = new Set(["complete", "failed", "cancelled"]);
 const catalogScanToolSchema = z.object({
   scanId: z.string().trim().min(1).max(160).optional(),
   targets: z.array(z.string().trim().min(1).max(80)).max(20).default([...DEFAULT_SCAN_TARGETS]),
@@ -140,6 +141,33 @@ const catalogScanFinalizeToolSchema = z.object({
   scanId: z.string().trim().min(1).max(160).optional(),
   timeoutMs: z.number().int().positive().max(60_000).default(30_000)
 });
+
+export function pruneTerminalCatalogScanJobIds<T extends { promise?: Promise<void> }>(
+  jobs: Map<string, T>,
+  getScanStatus: (scanId: string) => string | null | undefined
+): string[] {
+  for (const [scanId] of jobs) {
+    const status = getScanStatus(scanId);
+    if (!status || terminalCatalogScanStatuses.has(String(status))) {
+      jobs.delete(scanId);
+    }
+  }
+  return [...jobs.keys()];
+}
+
+function pruneTerminalCatalogScanJobs(catalogDb: ReturnType<typeof openCatalogDb>): string[] {
+  return pruneTerminalCatalogScanJobIds(catalogScanJobs, (scanId) => {
+    const status = getScanManifest(catalogDb, scanId)?.status;
+    return typeof status === "string" ? status : null;
+  });
+}
+
+function clearCatalogScanJobIfTerminal(scanId: string, scan: Record<string, unknown> | null | undefined): void {
+  const status = String(scan?.status ?? asRecord(scan?.manifest).status ?? "");
+  if (terminalCatalogScanStatuses.has(status)) {
+    catalogScanJobs.delete(scanId);
+  }
+}
 const catalogSearchToolSchema = z.object({
   query: z.string().trim().max(200).optional(),
   kind: z.string().trim().min(1).max(80).optional(),
@@ -878,7 +906,7 @@ function registerCatalogTools(server: McpServer, state: ArmaMcpState): void {
         const scanId = parsed.scanId ?? latestScanId(catalogDb);
         return jsonToolResult({
           ok: true,
-          activeJobs: [...catalogScanJobs.keys()],
+          activeJobs: pruneTerminalCatalogScanJobs(catalogDb),
           scan: scanId ? getScanProgress(catalogDb, scanId) : null,
           catalog: getCatalogStatus(catalogDb)
         });
@@ -919,6 +947,7 @@ function registerCatalogTools(server: McpServer, state: ArmaMcpState): void {
       }
       return withCatalogDb((catalogDb) => {
         markScanFinished(catalogDb, parsed.scanId, "cancelled");
+        catalogScanJobs.delete(parsed.scanId);
         return jsonToolResult({ ok: true, scan: getScanProgress(catalogDb, parsed.scanId) });
       });
     }
@@ -953,6 +982,7 @@ function registerCatalogTools(server: McpServer, state: ArmaMcpState): void {
       return withCatalogDb((catalogDb) => {
         markStaleScans(catalogDb, 1);
         const scanId = parsed.scanId ?? latestScanId(catalogDb);
+        pruneTerminalCatalogScanJobs(catalogDb);
         return jsonToolResult(scanId ? repairStaleScan(catalogDb, scanId) : { ok: false, error: "no_scan_available" });
       });
     }
@@ -1752,7 +1782,10 @@ async function pollCatalogScan(
     ok: true,
     chunksProcessed,
     scan: getScanProgress(catalogDb, scanId)
-  }));
+  })).then((result) => {
+    clearCatalogScanJobIfTerminal(scanId, asRecord(result.scan));
+    return result;
+  });
 }
 
 async function finalizeCatalogScan(state: ArmaMcpState, scanId: string, timeoutMs: number): Promise<Record<string, unknown>> {
@@ -1774,7 +1807,9 @@ async function finalizeCatalogScan(state: ArmaMcpState, scanId: string, timeoutM
       await dispatchCatalogAction(state, "catalog.scanFinish", { scanId, classCounts: counts }, timeoutMs);
     }
     markScanFinished(catalogDb, scanId, failed.length > 0 ? "failed" : cancelled.length > 0 ? "cancelled" : "complete", counts);
-    return { ok: failed.length === 0 && cancelled.length === 0, counts, scan: getScanProgress(catalogDb, scanId) };
+    const scan = getScanProgress(catalogDb, scanId);
+    clearCatalogScanJobIfTerminal(scanId, asRecord(scan));
+    return { ok: failed.length === 0 && cancelled.length === 0, counts, scan };
   });
 }
 
@@ -2268,7 +2303,7 @@ async function callManagedDiscoveryFallbackTool(
         const scanId = parsed.scanId ?? latestScanId(catalogDb);
         return {
           ok: true,
-          activeJobs: [...catalogScanJobs.keys()],
+          activeJobs: pruneTerminalCatalogScanJobs(catalogDb),
           scan: scanId ? getScanProgress(catalogDb, scanId) : null,
           catalog: getCatalogStatus(catalogDb)
         };
@@ -2289,6 +2324,7 @@ async function callManagedDiscoveryFallbackTool(
       }
       return withCatalogDb((catalogDb) => {
         markScanFinished(catalogDb, parsed.scanId, "cancelled");
+        catalogScanJobs.delete(parsed.scanId);
         return { ok: true, scan: getScanProgress(catalogDb, parsed.scanId) };
       });
     }
@@ -2302,6 +2338,7 @@ async function callManagedDiscoveryFallbackTool(
       return withCatalogDb((catalogDb) => {
         markStaleScans(catalogDb, 1);
         const scanId = parsed.scanId ?? latestScanId(catalogDb);
+        pruneTerminalCatalogScanJobs(catalogDb);
         return scanId ? repairStaleScan(catalogDb, scanId) : { ok: false, error: "no_scan_available" };
       });
     }
