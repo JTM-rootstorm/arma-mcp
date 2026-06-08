@@ -76,6 +76,7 @@ export const MCP_DISCOVERY_FALLBACK_TOOL_NAMES = [
   "arma.eden.inspectClass",
   "arma.eden.planComposition",
   "arma.catalog.scanStart",
+  "arma.catalog.scan",
   "arma.catalog.scanStatus",
   "arma.catalog.scanPoll",
   "arma.catalog.scanCancel",
@@ -95,14 +96,19 @@ export const MCP_DISCOVERY_FALLBACK_TOOL_NAMES = [
   "arma.catalog.findByRole",
   "arma.catalog.findSimilar",
   "arma.catalog.findByDimensions",
+  "arma.assets.search_classes",
   "arma.composition.plan",
   "arma.composition.previewLocal",
   "arma.composition.exportSqf",
   "arma.composition.exportEdenInstructions",
   "arma.eden.apply_composition",
+  "arma.eden.capture_composition",
+  "arma.eden.exportSelection",
   "arma.eden.batch",
   "arma.eden.create_entity",
   "arma.eden.find_entities",
+  "arma.eden.getObject",
+  "arma.eden.getSynced",
   "arma.eden.generate_aa_site",
   "arma.eden.generate_cover_line",
   "arma.eden.generate_lz",
@@ -2477,6 +2483,7 @@ async function callManagedDiscoveryFallbackTool(
       return inspectClassVisually(state, input);
     case "arma.eden.planComposition":
       return createCatalogCompositionPlan(compositionPlanToolSchema.parse(input));
+    case "arma.catalog.scan":
     case "arma.catalog.scanStart":
       return startCatalogScanTool(state, catalogScanToolSchema.parse(input)).then(extractJsonToolResult);
     case "arma.catalog.scanStatus": {
@@ -2621,6 +2628,8 @@ async function callManagedDiscoveryFallbackTool(
       const parsed = findByDimensionsToolSchema.parse(input);
       return withCatalogDb((catalogDb) => ({ results: findCatalogByDimensions(catalogDb, parsed) }));
     }
+    case "arma.assets.search_classes":
+      return executeActionTool(state, "assets.search_classes", "read", assetSearchToolSchema, input);
     case "arma.composition.plan": {
       const parsed = compositionPlanToolSchema.parse(input);
       return createCatalogCompositionPlan(parsed);
@@ -2639,12 +2648,35 @@ async function callManagedDiscoveryFallbackTool(
     }
     case "arma.eden.apply_composition":
       return executeActionTool(state, "eden.apply_composition", "write", applyCompositionToolSchema, input);
+    case "arma.eden.capture_composition":
+      return executeActionTool(state, "eden.capture_composition", "read", captureCompositionToolSchema, input);
+    case "arma.eden.exportSelection": {
+      const parsed = captureCompositionToolSchema.parse(input);
+      const result = await dispatchCatalogAction(state, "eden.capture_composition", parsed, 60_000);
+      return result.result;
+    }
     case "arma.eden.batch":
       return executeActionTool(state, "eden.batch", "write", batchToolSchema, input);
     case "arma.eden.create_entity":
       return executeActionTool(state, "eden.create_entity", "write", createEntityToolSchema, input);
     case "arma.eden.find_entities":
       return executeActionTool(state, "eden.find_entities", "read", entityListToolSchema, input);
+    case "arma.eden.getObject": {
+      const parsed = getEntitySnapshotToolSchema.parse(input);
+      const result = await dispatchCatalogAction(state, "eden.get_entity_snapshot", parsed, 60_000);
+      return withCatalogDb((catalogDb) => enrichEdenResult(catalogDb, result.result));
+    }
+    case "arma.eden.getSynced": {
+      const parsed = getEntitySnapshotToolSchema.parse(input);
+      const result = await dispatchCatalogAction(state, "eden.get_entity_snapshot", parsed, 60_000);
+      const snapshot = asRecord(asRecord(result.result).snapshot);
+      return {
+        entityId: parsed.entityId,
+        synced_to: snapshot.synced_to ?? [],
+        attached_to: snapshot.attached_to ?? null,
+        note: "Sync relationship extraction is limited to fields currently exposed by the Eden snapshot handler."
+      };
+    }
     case "arma.eden.generate_aa_site":
       return generateAaSite(siteGeneratorSchema.parse(input));
     case "arma.eden.generate_cover_line":
