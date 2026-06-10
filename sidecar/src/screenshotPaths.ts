@@ -1,5 +1,6 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
+import { spawnSync } from "node:child_process";
+import { delimiter, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const sidecarRepoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -10,6 +11,12 @@ export type ScreenshotMirroringStatus = {
   sourceDirEnv: "ARMA_MCP_SCREENSHOT_SOURCE_DIR";
   sourceDir: string | null;
   candidateSourceDirs: string[];
+  screenshotBackend: "arma_then_linux" | "linux";
+  linuxFallback: {
+    enabled: boolean;
+    tool: string | null;
+    mode: string;
+  };
 };
 
 export function screenshotCacheDir(className: string): string {
@@ -44,16 +51,78 @@ export function mirrorProfileScreenshot(profileRelativePath: string, targetPath:
   return { copied: true };
 }
 
+export type LinuxScreenshotFallbackResult = {
+  captured: boolean;
+  method?: string;
+  warning?: string;
+};
+
+export function captureLinuxScreenshotFallback(targetPath: string): LinuxScreenshotFallbackResult {
+  const enabled = process.env.ARMA_MCP_SCREENSHOT_FALLBACK ?? "auto";
+  if (["0", "false", "off", "none"].includes(enabled.toLowerCase())) {
+    return { captured: false, warning: "linux_screenshot_fallback_disabled" };
+  }
+
+  const tool = resolveFallbackTool();
+  if (!tool) {
+    return { captured: false, warning: "linux_screenshot_fallback_tool_not_found" };
+  }
+
+  const mode = process.env.ARMA_MCP_SCREENSHOT_FALLBACK_MODE ?? "activewindow";
+  const args = fallbackArgs(tool, mode, targetPath);
+  if (!args) {
+    return { captured: false, warning: `linux_screenshot_fallback_mode_unsupported:${mode}` };
+  }
+
+  mkdirSync(dirname(targetPath), { recursive: true });
+  rmSync(targetPath, { force: true });
+
+  const result = spawnSync(tool, args, {
+    env: process.env,
+    encoding: "utf8",
+    timeout: screenshotFallbackTimeoutMs(),
+    windowsHide: true
+  });
+  if (result.error) {
+    return { captured: false, method: fallbackMethod(tool, mode), warning: `linux_screenshot_fallback_error:${truncate(result.error.message)}` };
+  }
+  if (result.status !== 0) {
+    const stderr = result.stderr || result.stdout || `exit_${result.status}`;
+    return { captured: false, method: fallbackMethod(tool, mode), warning: `linux_screenshot_fallback_failed:${truncate(stderr)}` };
+  }
+  if (!existsSync(targetPath) || fileSize(targetPath) <= 0) {
+    rmSync(targetPath, { force: true });
+    return { captured: false, method: fallbackMethod(tool, mode), warning: "linux_screenshot_fallback_empty_output" };
+  }
+  return { captured: true, method: fallbackMethod(tool, mode) };
+}
+
 export function getScreenshotMirroringStatus(): ScreenshotMirroringStatus {
   const sourceDir = resolveScreenshotSourceRoot();
   const configured = Boolean(process.env.ARMA_MCP_SCREENSHOT_SOURCE_DIR);
+  const tool = resolveFallbackTool();
   return {
     cacheMirroring: Boolean(sourceDir),
     cacheMirroringMode: configured ? "configured" : sourceDir ? "auto_detected_standard_path" : "auto_detect_standard_paths",
     sourceDirEnv: "ARMA_MCP_SCREENSHOT_SOURCE_DIR",
     sourceDir: sourceDir ?? null,
-    candidateSourceDirs: screenshotSourceRootCandidates()
+    candidateSourceDirs: screenshotSourceRootCandidates(),
+    screenshotBackend: shouldSkipArmaScreenshotCommand() ? "linux" : "arma_then_linux",
+    linuxFallback: {
+      enabled: !["0", "false", "off", "none"].includes((process.env.ARMA_MCP_SCREENSHOT_FALLBACK ?? "auto").toLowerCase()),
+      tool,
+      mode: process.env.ARMA_MCP_SCREENSHOT_FALLBACK_MODE ?? "activewindow"
+    }
   };
+}
+
+export function shouldSkipArmaScreenshotCommand(): boolean {
+  const explicit = process.env.ARMA_MCP_SCREENSHOT_SKIP_ARMA;
+  if (explicit && ["1", "true", "yes", "on"].includes(explicit.toLowerCase())) {
+    return true;
+  }
+  const backend = (process.env.ARMA_MCP_SCREENSHOT_BACKEND ?? "").toLowerCase();
+  return ["linux", "wayland", "external"].includes(backend);
 }
 
 function resolveScreenshotSourceRoot(normalizedRelative?: string): string | undefined {
@@ -146,6 +215,78 @@ function screenshotReadyTimeoutMs(): number {
     return 5_000;
   }
   return Math.min(Math.trunc(parsed), 30_000);
+}
+
+function screenshotFallbackTimeoutMs(): number {
+  const parsed = Number(process.env.ARMA_MCP_SCREENSHOT_FALLBACK_TIMEOUT_MS ?? 10_000);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return 10_000;
+  }
+  return Math.min(Math.trunc(parsed), 60_000);
+}
+
+function resolveFallbackTool(): string | null {
+  const configured = process.env.ARMA_MCP_SCREENSHOT_FALLBACK_TOOL;
+  if (configured) {
+    return findOnPath(configured);
+  }
+  for (const tool of ["spectacle", "gnome-screenshot", "grim", "maim", "import", "scrot"]) {
+    const found = findOnPath(tool);
+    if (found) {
+      return found;
+    }
+  }
+  return null;
+}
+
+function fallbackArgs(toolPath: string, mode: string, targetPath: string): string[] | null {
+  const tool = toolPath.split(/[\\/]/).pop() ?? toolPath;
+  const normalizedMode = mode.toLowerCase();
+  if (tool === "spectacle") {
+    const captureArg = normalizedMode === "fullscreen" ? "--fullscreen" : normalizedMode === "current" ? "--current" : "--activewindow";
+    return ["--background", "--nonotify", captureArg, "--output", targetPath];
+  }
+  if (tool === "gnome-screenshot") {
+    const captureArgs = normalizedMode === "fullscreen" ? [] : normalizedMode === "activewindow" ? ["--window"] : [];
+    return [...captureArgs, "--file", targetPath];
+  }
+  if (tool === "grim") {
+    return normalizedMode === "activewindow" ? null : [targetPath];
+  }
+  if (tool === "maim") {
+    return normalizedMode === "activewindow" ? ["-i", ":ACTIVE:", targetPath] : [targetPath];
+  }
+  if (tool === "import") {
+    return normalizedMode === "activewindow" ? ["-window", "root", targetPath] : ["-window", "root", targetPath];
+  }
+  if (tool === "scrot") {
+    return [targetPath];
+  }
+  return null;
+}
+
+function fallbackMethod(toolPath: string, mode: string): string {
+  return `${toolPath.split(/[\\/]/).pop() ?? toolPath}:${mode}`;
+}
+
+function findOnPath(command: string): string | null {
+  if (command.includes("/") && existsSync(command)) {
+    return command;
+  }
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (!dir) {
+      continue;
+    }
+    const candidate = join(dir, command);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function truncate(input: string): string {
+  return input.replace(/\s+/g, " ").trim().slice(0, 240);
 }
 
 function safePathSegment(input: string): string {

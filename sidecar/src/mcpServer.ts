@@ -53,7 +53,7 @@ import {
   type ArmaMcpActionName
 } from "./protocol.js";
 import { enforceToolPolicy } from "./policy.js";
-import { mirrorProfileScreenshot, screenshotCacheDir } from "./screenshotPaths.js";
+import { captureLinuxScreenshotFallback, mirrorProfileScreenshot, screenshotCacheDir, shouldSkipArmaScreenshotCommand } from "./screenshotPaths.js";
 import {
   compositionPlanSchema,
   generateCheckpointPlanInputSchema,
@@ -64,6 +64,7 @@ import {
 } from "./schema.js";
 import type { SidecarRuntimeInfo } from "./runtime.js";
 import type { ArmaMcpState } from "./state.js";
+import { logger } from "./log.js";
 
 const emptyInputSchema = z.object({});
 export const MCP_DISCOVERY_FALLBACK_TOOL_NAMES = [
@@ -367,8 +368,11 @@ const getEntitiesToolSchema = readOptionsSchema.extend({
 });
 const entityListToolSchema = readOptionsSchema.extend({
   types: z.array(z.string().min(1).max(40)).max(8).optional(),
+  type: z.string().min(1).max(40).optional(),
   classNameContains: z.string().max(160).optional(),
+  className: z.string().max(160).optional(),
   variableNameContains: z.string().max(160).optional(),
+  variableName: z.string().max(160).optional(),
   radius: z
     .object({
       centerATL: vector3Schema,
@@ -377,6 +381,22 @@ const entityListToolSchema = readOptionsSchema.extend({
     .optional(),
   limit: z.number().int().positive().max(500).default(200)
 });
+export function normalizeEntityListParams(input: z.infer<typeof entityListToolSchema>): z.infer<typeof entityListToolSchema> {
+  const normalized = { ...input };
+  if ((!normalized.types || normalized.types.length === 0) && normalized.type) {
+    normalized.types = [normalized.type];
+  }
+  if (!normalized.classNameContains && normalized.className) {
+    normalized.classNameContains = normalized.className;
+  }
+  if (!normalized.variableNameContains && normalized.variableName) {
+    normalized.variableNameContains = normalized.variableName;
+  }
+  delete normalized.type;
+  delete normalized.className;
+  delete normalized.variableName;
+  return normalized;
+}
 const getEntityAttributesToolSchema = z.object({
   entityId: entityIdSchema,
   attributeNames: z.array(z.string().min(1).max(80)).max(50).optional()
@@ -600,7 +620,7 @@ const layerRefSchema = z.object({
   parentLayerId: z.number().int().default(-1)
 });
 const assignLayerToolSchema = writeBaseSchema.extend({
-  entityIds: z.array(entityIdSchema).min(1).max(100),
+  entityIds: z.array(entityIdSchema).max(100).default([]),
   layer: layerRefSchema
 });
 const removeFromLayerToolSchema = writeBaseSchema.extend({
@@ -928,23 +948,29 @@ export function createMcpServer(state: ArmaMcpState, bridgeConfig: BridgeConfig,
     readOptionsSchema,
     "Get Eden Selection"
   );
-  registerActionTool(
-    server,
-    state,
+  server.registerTool(
     "arma.eden.list_entities",
-    "eden.list_entities",
-    "read",
-    entityListToolSchema,
-    "List Eden Entities"
+    {
+      title: "List Eden Entities",
+      description: "Run direct bridge action eden.list_entities.",
+      inputSchema: entityListToolSchema.shape
+    },
+    async (input) =>
+      jsonToolResult(
+        await executeActionTool(state, "eden.list_entities", "read", entityListToolSchema, normalizeEntityListParams(entityListToolSchema.parse(input)))
+      )
   );
-  registerActionTool(
-    server,
-    state,
+  server.registerTool(
     "arma.eden.find_entities",
-    "eden.find_entities",
-    "read",
-    entityListToolSchema,
-    "Find Eden Entities"
+    {
+      title: "Find Eden Entities",
+      description: "Run direct bridge action eden.find_entities.",
+      inputSchema: entityListToolSchema.shape
+    },
+    async (input) =>
+      jsonToolResult(
+        await executeActionTool(state, "eden.find_entities", "read", entityListToolSchema, normalizeEntityListParams(entityListToolSchema.parse(input)))
+      )
   );
   registerActionTool(
     server,
@@ -2180,6 +2206,7 @@ function registerVisualAndCameraTools(server: McpServer, state: ArmaMcpState): v
         });
         const result = await captureClassAngles(state, parsed, runId);
         const screenshots = storeCapturedScreenshots(catalogDb, parsed.className, runId, asRecord(result.result));
+        await cleanupPreviewSceneAfterExternalCapture(state);
         const failed = screenshots.filter((shot) => shot.captured === false);
         finishVisualInspectionRun(catalogDb, runId, failed.length > 0 ? "partial" : "complete", failed.length > 0 ? "one_or_more_screenshots_failed" : null);
         return jsonToolResult({ ...asRecord(result.result), inspectionRunId: runId, screenshots });
@@ -2200,6 +2227,7 @@ function registerVisualAndCameraTools(server: McpServer, state: ArmaMcpState): v
       const payload = asRecord(result.result);
       const runId = String(payload.run_id ?? payload.runId ?? parsed.runId ?? `capture_${Date.now().toString(36)}`);
       const screenshots = normalizeScreenshotArtifacts(parsed.className, undefined, asScreenshotRows(payload.screenshots), runId);
+      await cleanupPreviewSceneAfterExternalCapture(state);
       return jsonToolResult({ ...payload, screenshots });
     }
   );
@@ -2217,7 +2245,12 @@ function registerVisualAndCameraTools(server: McpServer, state: ArmaMcpState): v
       const result = await dispatchCatalogAction(
         state,
         "camera.captureCurrentView",
-        { runId, filename: parsed.filename },
+        {
+          runId,
+          filename: parsed.filename,
+          skipArmaScreenshot: shouldSkipArmaScreenshotCommand(),
+          captureBackend: shouldSkipArmaScreenshotCommand() ? "linux" : "arma"
+        },
         parsed.timeoutMs
       );
       const payload = asRecord(result.result);
@@ -2369,18 +2402,7 @@ function registerCompositionCatalogTools(server: McpServer): void {
     },
     async (input) => {
       const parsed = findSimilarToolSchema.parse(input);
-      return withCatalogDb((catalogDb) => {
-        const catalogClass = getCatalogClass(catalogDb, parsed.className);
-        if (!catalogClass) {
-          return jsonToolResult({ results: [] });
-        }
-        const tags = Array.isArray(catalogClass.tags) ? catalogClass.tags.map(String).slice(0, 3) : [];
-        return jsonToolResult({
-          results: searchCatalogClasses(catalogDb, { kind: String(catalogClass.kind ?? ""), tags, limit: parsed.limit }).filter(
-            (item) => item.class_name !== parsed.className
-          )
-        });
-      });
+      return withCatalogDb((catalogDb) => jsonToolResult({ results: findSimilarCatalogClasses(catalogDb, parsed.className, parsed.limit) }));
     }
   );
 
@@ -2459,7 +2481,9 @@ async function captureClassAngles(
       distance: parsed.distance,
       height: parsed.height,
       fov: parsed.fov,
-      settleSeconds: parsed.settleSeconds
+      settleSeconds: parsed.settleSeconds,
+      skipArmaScreenshot: shouldSkipArmaScreenshotCommand(),
+      captureBackend: shouldSkipArmaScreenshotCommand() ? "linux" : "arma"
     },
     parsed.timeoutMs
   );
@@ -2502,13 +2526,22 @@ function normalizeScreenshotArtifacts(
     const angle = safePathSegment(String(screenshot.angle ?? "current"));
     const targetPath = resolve(targetDir, `${safePathSegment(runId)}_${angle}.png`);
     const copy = mirrorProfileScreenshot(profileRelativePath, targetPath);
+    const fallback = copy.copied ? { captured: false as const } : captureLinuxScreenshotFallback(targetPath);
+    const cached = copy.copied || fallback.captured;
+    const captureBackend = String(screenshot.capture_backend ?? "");
+    const skippedArmaScreenshot = captureBackend === "linux";
     return {
       ...screenshot,
+      arma_captured: skippedArmaScreenshot ? false : screenshot.captured,
+      captured: cached ? true : skippedArmaScreenshot ? false : screenshot.captured,
       inspectionRunId: inspectionRunId ?? null,
       profile_relative_path: profileRelativePath,
-      local_file_path: copy.copied ? targetPath : null,
+      local_file_path: cached ? targetPath : null,
       expected_local_file_path: targetPath,
       copied_to_cache: copy.copied,
+      linux_fallback_to_cache: fallback.captured,
+      linux_fallback_method: fallback.method,
+      linux_fallback_warning: fallback.warning,
       copy_warning: copy.warning
     };
   });
@@ -2516,6 +2549,17 @@ function normalizeScreenshotArtifacts(
 
 function asScreenshotRows(input: unknown): Array<Record<string, unknown>> {
   return Array.isArray(input) ? input.map(asRecord) : [];
+}
+
+async function cleanupPreviewSceneAfterExternalCapture(state: ArmaMcpState): Promise<void> {
+  if (!shouldSkipArmaScreenshotCommand()) {
+    return;
+  }
+  try {
+    await dispatchCatalogAction(state, "camera.destroyPreviewScene", {}, 30_000);
+  } catch (error) {
+    logger.warn("failed to clean up preview scene after external screenshot capture", { error: error instanceof Error ? error.message : String(error) });
+  }
 }
 
 async function startCatalogScanTool(
@@ -2954,42 +2998,36 @@ export function recommendCatalogRole(catalogDb: ReturnType<typeof openCatalogDb>
   const roleTags = roleToTags(role);
   const seen = new Set<string>();
   const results: Record<string, unknown>[] = [];
-  for (const tag of roleTags.primary) {
-    const searchInput = shouldUseRoleQueryRanking(role) ? { query: role, tags: [tag], limit: Math.min(limit * 4, 100) } : { tags: [tag], limit };
-    for (const item of searchCatalogClasses(catalogDb, searchInput)) {
-      const className = String(item.class_name);
-      if (!seen.has(className)) {
-        seen.add(className);
-        results.push({ ...item, confidence: tag === role ? 0.9 : 0.75, matched_role: tag });
-      }
-      if (results.length >= limit) {
-        return results;
-      }
-    }
-  }
-  for (const item of searchCatalogClasses(catalogDb, { query: role, limit })) {
+  const maxCandidates = Math.max(limit * 6, 25);
+  const pushCandidate = (item: Record<string, unknown>, confidence: number, matchedRole: string) => {
     const className = String(item.class_name);
     if (!seen.has(className)) {
       seen.add(className);
-      results.push({ ...item, confidence: 0.55, matched_role: "text_search" });
+      results.push({ ...item, confidence, matched_role: matchedRole });
     }
-    if (results.length >= limit) {
-      break;
+  };
+  for (const tag of roleTags.primary) {
+    const searchInput = shouldUseRoleQueryRanking(role)
+      ? { query: role, tags: [tag], limit: Math.min(maxCandidates, 100) }
+      : { tags: [tag], limit: maxCandidates };
+    for (const item of searchCatalogClasses(catalogDb, searchInput)) {
+      pushCandidate(item, tag === role ? 0.9 : 0.75, tag);
+    }
+  }
+  for (const item of searchCatalogClasses(catalogDb, { query: role, limit: maxCandidates })) {
+    pushCandidate(item, 0.55, "text_search");
+  }
+  for (const query of roleRecommendationQueries(role)) {
+    for (const item of searchCatalogClasses(catalogDb, { query, limit: maxCandidates })) {
+      pushCandidate(item, 0.55, "text_search");
     }
   }
   for (const tag of roleTags.broad) {
-    for (const item of searchCatalogClasses(catalogDb, { tags: [tag], limit })) {
-      const className = String(item.class_name);
-      if (!seen.has(className)) {
-        seen.add(className);
-        results.push({ ...item, confidence: 0.45, matched_role: tag });
-      }
-      if (results.length >= limit) {
-        return results;
-      }
+    for (const item of searchCatalogClasses(catalogDb, { tags: [tag], limit: maxCandidates })) {
+      pushCandidate(item, 0.45, tag);
     }
   }
-  return results;
+  return rankRoleRecommendations(role, results).slice(0, limit);
 }
 
 function shouldUseRoleQueryRanking(role: string): boolean {
@@ -3027,6 +3065,196 @@ function roleToTags(role: string): { primary: string[]; broad: string[] } {
     primary: [normalized, ...mapped.primary].filter((tag, index, tags) => tags.indexOf(tag) === index),
     broad: (mapped.broad ?? []).filter((tag, index, tags) => tags.indexOf(tag) === index)
   };
+}
+
+function roleRecommendationQueries(role: string): string[] {
+  const normalized = role.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (normalized === "supply" || normalized === "generator_supply") {
+    return ["supply box", "ammo crate", "cargo supply"];
+  }
+  return [];
+}
+
+function catalogText(item: Record<string, unknown>): string {
+  return [
+    item.class_name,
+    item.display_name,
+    item.kind,
+    item.subkind,
+    item.editor_category,
+    item.editor_subcategory,
+    item.vehicle_class,
+    ...(Array.isArray(item.tags) ? item.tags : [])
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function catalogIdentityText(item: Record<string, unknown>): string {
+  return [
+    item.class_name,
+    item.display_name,
+    item.kind,
+    item.subkind,
+    item.editor_category,
+    item.editor_subcategory,
+    item.vehicle_class
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function roleSpecificScore(role: string, item: Record<string, unknown>): number {
+  const normalized = role.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const text = catalogText(item);
+  const identityText = catalogIdentityText(item);
+  const kind = String(item.kind ?? "").toLowerCase();
+  const subkind = String(item.subkind ?? "").toLowerCase();
+  const tags = Array.isArray(item.tags) ? item.tags.map((tag) => String(tag).toLowerCase()) : [];
+  let score = Number(item.confidence ?? 0);
+  if (text.match(/\b(wreck|ruin|debris|crater|destroyed)\b/) || String(item.class_name ?? "").toLowerCase().includes("_wreck")) {
+    score -= 1.5;
+  }
+  if ((text.match(/\b(console|terminal)\b/) || ["console", "terminal"].includes(subkind)) && normalized.match(/generator_(structure|fortification)/)) {
+    score -= 0.7;
+  }
+  if (normalized === "generator_fortification") {
+    if (["fortification", "structure"].includes(kind) || text.match(/\b(barrier|hbarrier|bagfence|sandbag|bunker|wall|cover)\b/)) {
+      score += 1.0;
+    }
+    if (text.match(/\b(plane|aircraft|ship|vehicle)\b/)) {
+      score -= 0.8;
+    }
+  }
+  if (normalized === "generator_structure") {
+    if (["structure", "fortification"].includes(kind) || text.match(/\b(building|house|tower|bunker|cargo|patrol)\b/)) {
+      score += 1.0;
+    }
+    if (text.match(/\b(plane|aircraft|weapon|magazine)\b/)) {
+      score -= 0.9;
+    }
+  }
+  if (normalized === "generator_supply") {
+    if (tags.includes("ammo_crate")) {
+      score += 0.8;
+    }
+    if (["supply", "prop"].includes(kind) && identityText.match(/\b(box|crate|container|cargo|supply|ammo)\b/)) {
+      score += 1.0;
+    }
+    if (identityText.includes("placeablemagazine") || identityText.match(/\b(magazines?|missile|rocket|grenade|weapon)\b/)) {
+      score -= 1.2;
+    }
+  }
+  if (normalized === "supply") {
+    if (tags.includes("ammo_crate")) {
+      score += 0.8;
+    }
+    if (["supply", "prop", "structure"].includes(kind) && identityText.match(/\b(box|crate|container|cargo|supply|cache|ammo)\b/)) {
+      score += 1.0;
+    }
+    if (identityText.match(/\b(sign|arrow|game|backgammon|minikit)\b/)) {
+      score -= 0.9;
+    }
+    if (identityText.includes("placeablemagazine") || identityText.match(/\b(magazines?|missile|rocket|grenade)\b/)) {
+      score -= 1.4;
+    }
+  }
+  if (normalized === "generator_static_weapon") {
+    if (text.match(/\b(static|turret|aa|launcher|weapon)\b/)) {
+      score += 1.0;
+    }
+    if (text.match(/\b(placeablemagazine|magazine|wreck|pelican)\b/)) {
+      score -= 1.2;
+    }
+  }
+  return score;
+}
+
+function rankRoleRecommendations(role: string, items: Record<string, unknown>[]): Record<string, unknown>[] {
+  return [...items].sort((left, right) => roleSpecificScore(role, right) - roleSpecificScore(role, left));
+}
+
+export function findSimilarCatalogClasses(
+  catalogDb: ReturnType<typeof openCatalogDb>,
+  className: string,
+  limit: number
+): Record<string, unknown>[] {
+  const catalogClass = getCatalogClass(catalogDb, className);
+  if (!catalogClass) {
+    return [];
+  }
+  const tags = Array.isArray(catalogClass.tags) ? catalogClass.tags.map(String).slice(0, 4) : [];
+  const candidateMap = new Map<string, Record<string, unknown>>();
+  const addCandidates = (items: Record<string, unknown>[]) => {
+    for (const item of items) {
+      if (item.class_name !== className) {
+        candidateMap.set(String(item.class_name), item);
+      }
+    }
+  };
+  addCandidates(searchCatalogClasses(catalogDb, {
+    kind: String(catalogClass.kind ?? ""),
+    tags,
+    limit: Math.max(limit * 6, 25)
+  }));
+  const sourceText = catalogText(catalogClass);
+  for (const query of similarCatalogQueries(sourceText, catalogClass)) {
+    addCandidates(searchCatalogClasses(catalogDb, {
+      kind: String(catalogClass.kind ?? ""),
+      query,
+      limit: Math.max(limit * 8, 40)
+    }));
+  }
+  return [...candidateMap.values()]
+    .sort((left, right) => similarCatalogScore(sourceText, catalogClass, right) - similarCatalogScore(sourceText, catalogClass, left))
+    .slice(0, limit);
+}
+
+function similarCatalogQueries(sourceText: string, source: Record<string, unknown>): string[] {
+  const queries = new Set<string>();
+  if (sourceText.includes("medical")) {
+    queries.add("medical");
+  }
+  if (sourceText.includes("bed") || String(source.subkind ?? "").toLowerCase() === "bed") {
+    queries.add("medical bed");
+    queries.add("stretcher");
+    queries.add("scanner");
+  }
+  return [...queries];
+}
+
+function similarCatalogScore(sourceText: string, source: Record<string, unknown>, candidate: Record<string, unknown>): number {
+  const text = catalogText(candidate);
+  const identityText = catalogIdentityText(candidate);
+  const sourceTags = new Set(Array.isArray(source.tags) ? source.tags.map(String) : []);
+  const candidateTags = Array.isArray(candidate.tags) ? candidate.tags.map(String) : [];
+  let score = 0;
+  for (const tag of candidateTags) {
+    if (sourceTags.has(tag)) {
+      score += 0.3;
+    }
+  }
+  if (String(candidate.kind ?? "") === String(source.kind ?? "")) {
+    score += 0.4;
+  }
+  if (String(candidate.subkind ?? "") && String(candidate.subkind ?? "") === String(source.subkind ?? "")) {
+    score += 0.4;
+  }
+  if (sourceText.includes("medical") && text.includes("medical")) {
+    score += 0.4;
+  }
+  if (sourceText.includes("bed") && identityText.match(/\b(bed|stretcher|scanner|surgery)\b/)) {
+    score += 1.6;
+  }
+  if (sourceText.includes("bed") && identityText.match(/\b(terminal|console|case|box|crate)\b/)) {
+    score -= 1.8;
+  }
+  if (sourceText.includes("bed") && identityText.match(/\b(first aid|kit|sign|label|truck|container|backpack|rucksack|barrack)\b/)) {
+    score -= 0.9;
+  }
+  return score;
 }
 
 function createDataOnlyCompositionPlan(
@@ -3078,25 +3306,100 @@ function catalogDimensions(catalogDb: ReturnType<typeof openCatalogDb>, classNam
   };
 }
 
-function exportPlanSqf(plan: Record<string, unknown>): string {
-  const operations = Array.isArray(plan.operations) ? plan.operations.map(asRecord) : [];
-  return operations
-    .filter((operation) => operation.op === "create_entity" && operation.className)
-    .map((operation) => {
-      const transform = asRecord(operation.transform);
-      const position = Array.isArray(transform.positionATL) ? transform.positionATL : [0, 0, 0];
-      const dir = typeof transform.dir === "number" ? transform.dir : 0;
-      return `private _obj = createVehicle [${JSON.stringify(operation.className)}, ${JSON.stringify(position)}, [], 0, "CAN_COLLIDE"]; _obj setDir ${dir};`;
+type ExportablePlacement = {
+  kind: "Object" | "Marker" | "Trigger" | "Logic" | "Module" | "Waypoint" | "Group" | "Unit";
+  className: string;
+  positionATL: [number, number, number];
+  dir: number;
+  text?: string;
+};
+
+export function exportPlanSqf(plan: Record<string, unknown>): string {
+  return normalizeExportPlacements(plan)
+    .map((placement, index) => {
+      const position = JSON.stringify(placement.positionATL);
+      const variable = `_amcp_${index + 1}`;
+      if (placement.kind === "Marker") {
+        const name = `amcp_marker_${index + 1}`;
+        return [
+          `private ${variable} = createMarker [${JSON.stringify(name)}, ${position}];`,
+          `${variable} setMarkerType ${JSON.stringify(placement.className || "mil_dot")};`,
+          `${variable} setMarkerDir ${placement.dir};`,
+          placement.text ? `${variable} setMarkerText ${JSON.stringify(placement.text)};` : ""
+        ]
+          .filter(Boolean)
+          .join(" ");
+      }
+      return `private ${variable} = createVehicle [${JSON.stringify(placement.className)}, ${position}, [], 0, "CAN_COLLIDE"]; ${variable} setDir ${placement.dir};`;
     })
     .join("\n");
 }
 
-function exportEdenInstructions(plan: Record<string, unknown>): string[] {
-  const operations = Array.isArray(plan.operations) ? plan.operations.map(asRecord) : [];
-  return operations.map((operation, index) => {
-    const transform = asRecord(operation.transform);
-    return `${index + 1}. Place ${String(operation.className ?? "unknown class")} at ${JSON.stringify(transform.positionATL ?? [0, 0, 0])} facing ${String(transform.dir ?? 0)} degrees.`;
+export function exportEdenInstructions(plan: Record<string, unknown>): string[] {
+  return normalizeExportPlacements(plan).map((placement, index) => {
+    const label = placement.kind === "Marker" ? `marker ${placement.className || "mil_dot"}` : placement.className;
+    const suffix = placement.text ? ` with text ${JSON.stringify(placement.text)}` : "";
+    return `${index + 1}. Place ${label} at ${JSON.stringify(placement.positionATL)} facing ${placement.dir} degrees${suffix}.`;
   });
+}
+
+function normalizeExportPlacements(plan: Record<string, unknown>): ExportablePlacement[] {
+  const anchor = asRecord(plan.anchor);
+  const anchorPosition = vectorFromUnknown(anchor.positionATL, [0, 0, 0]);
+  const anchorDir = numberFromUnknown(anchor.dir, 0);
+  const rawOperations: Record<string, unknown>[] = Array.isArray(plan.operations) ? plan.operations.map(asRecord) : [];
+  const entityOperations: Record<string, unknown>[] = Array.isArray(plan.entities)
+    ? plan.entities.map((entity) => {
+        const record = asRecord(entity);
+        return { ...record, op: record.type === "Marker" ? "create_marker" : "create_entity" };
+      })
+    : [];
+  return [...rawOperations, ...entityOperations]
+    .map((operation): ExportablePlacement | null => {
+      if (operation.op === "create_entity" || operation.op === "create_marker" || operation.op === "create_trigger") {
+        const transform = asRecord(operation.transform);
+        return {
+          kind: operation.op === "create_marker" ? "Marker" : operation.op === "create_trigger" ? "Trigger" : placementKind(operation.type),
+          className: String(operation.className ?? operation.markerType ?? (operation.op === "create_marker" ? "mil_dot" : "")),
+          positionATL: vectorFromUnknown(transform.positionATL, anchorPosition),
+          dir: numberFromUnknown(transform.dir, anchorDir),
+          text: typeof operation.text === "string" ? operation.text : undefined
+        };
+      }
+      if (operation.type === "createObject" || operation.type === "createMarker") {
+        const offset = vectorFromUnknown(operation.offset, [0, 0, 0]);
+        return {
+          kind: operation.type === "createMarker" ? "Marker" : "Object",
+          className: String(operation.className ?? operation.markerType ?? "mil_dot"),
+          positionATL: [anchorPosition[0] + offset[0], anchorPosition[1] + offset[1], anchorPosition[2] + offset[2]],
+          dir: anchorDir + numberFromUnknown(operation.directionOffset, 0),
+          text: typeof operation.text === "string" ? operation.text : undefined
+        };
+      }
+      return null;
+    })
+    .filter((placement): placement is ExportablePlacement => placement !== null && placement.className.length > 0);
+}
+
+function placementKind(value: unknown): ExportablePlacement["kind"] {
+  if (value === "Marker" || value === "Trigger" || value === "Logic" || value === "Module" || value === "Waypoint" || value === "Group" || value === "Unit") {
+    return value;
+  }
+  return "Object";
+}
+
+function vectorFromUnknown(value: unknown, fallback: [number, number, number]): [number, number, number] {
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+  const x = numberFromUnknown(value[0], fallback[0]);
+  const y = numberFromUnknown(value[1], fallback[1]);
+  const z = numberFromUnknown(value[2], fallback[2]);
+  return [x, y, z];
+}
+
+function numberFromUnknown(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
 async function withCatalogDb<T>(callback: (catalogDb: ReturnType<typeof openCatalogDb>) => T | Promise<T>): Promise<T> {
@@ -3358,6 +3661,7 @@ async function callManagedDiscoveryFallbackTool(
       const payload = asRecord(result.result);
       const runId = String(payload.run_id ?? payload.runId ?? parsed.runId ?? `capture_${Date.now().toString(36)}`);
       const screenshots = normalizeScreenshotArtifacts(parsed.className, undefined, asScreenshotRows(payload.screenshots), runId);
+      await cleanupPreviewSceneAfterExternalCapture(state);
       return { ...payload, screenshots };
     }
     case "arma.camera.createPreviewScene":
@@ -3523,18 +3827,7 @@ async function callManagedDiscoveryFallbackTool(
     }
     case "arma.catalog.findSimilar": {
       const parsed = findSimilarToolSchema.parse(input);
-      return withCatalogDb((catalogDb) => {
-        const catalogClass = getCatalogClass(catalogDb, parsed.className);
-        if (!catalogClass) {
-          return { results: [] };
-        }
-        const tags = Array.isArray(catalogClass.tags) ? catalogClass.tags.map(String).slice(0, 3) : [];
-        return {
-          results: searchCatalogClasses(catalogDb, { kind: String(catalogClass.kind ?? ""), tags, limit: parsed.limit }).filter(
-            (item) => item.class_name !== parsed.className
-          )
-        };
-      });
+      return withCatalogDb((catalogDb) => ({ results: findSimilarCatalogClasses(catalogDb, parsed.className, parsed.limit) }));
     }
     case "arma.catalog.findByDimensions": {
       const parsed = findByDimensionsToolSchema.parse(input);
@@ -3625,7 +3918,7 @@ async function callManagedDiscoveryFallbackTool(
       });
     }
     case "arma.eden.find_entities":
-      return executeActionTool(state, "eden.find_entities", "read", entityListToolSchema, input);
+      return executeActionTool(state, "eden.find_entities", "read", entityListToolSchema, normalizeEntityListParams(entityListToolSchema.parse(input)));
     case "arma.eden.getObject": {
       const parsed = getEntitySnapshotToolSchema.parse(input);
       const result = await dispatchCatalogAction(state, "eden.get_entity_snapshot", parsed, 60_000);
@@ -3662,7 +3955,7 @@ async function callManagedDiscoveryFallbackTool(
       return withCatalogDb((catalogDb) => enrichEdenResult(catalogDb, result.result));
     }
     case "arma.eden.list_entities":
-      return executeActionTool(state, "eden.list_entities", "read", entityListToolSchema, input);
+      return executeActionTool(state, "eden.list_entities", "read", entityListToolSchema, normalizeEntityListParams(entityListToolSchema.parse(input)));
     case "arma.eden.list_layers":
       return executeActionTool(state, "eden.list_layers", "read", emptyInputSchema, input);
     case "arma.eden.create_layer":
@@ -3878,6 +4171,7 @@ async function inspectClassWithCamera(state: ArmaMcpState, input: unknown): Prom
     });
     const result = await captureClassAngles(state, parsed, runId);
     const screenshots = storeCapturedScreenshots(catalogDb, parsed.className, runId, asRecord(result.result));
+    await cleanupPreviewSceneAfterExternalCapture(state);
     const failed = screenshots.filter((shot) => shot.captured === false);
     finishVisualInspectionRun(
       catalogDb,
@@ -3908,8 +4202,9 @@ async function inspectClassVisually(state: ArmaMcpState, input: unknown): Promis
       screenshotDir,
       resolution: parsed.resolution
     });
-    return captureClassAngles(state, { ...parsed, runId: String(runId) }, runId).then((result) => {
+    return captureClassAngles(state, { ...parsed, runId: String(runId) }, runId).then(async (result) => {
       const screenshots = storeCapturedScreenshots(catalogDb, parsed.className, runId, asRecord(result.result));
+      await cleanupPreviewSceneAfterExternalCapture(state);
       const failed = screenshots.filter((shot) => shot.captured === false);
       finishVisualInspectionRun(
         catalogDb,

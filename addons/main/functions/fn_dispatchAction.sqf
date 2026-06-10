@@ -77,6 +77,7 @@ switch (_action) do {
             if ((_entityId find "eden:marker:") isEqualTo 0) then {_entityType = "Marker"};
             if ((_entityId find "eden:trigger:") isEqualTo 0) then {_entityType = "Trigger"};
             if ((_entityId find "eden:logic:") isEqualTo 0) then {_entityType = "Logic"};
+            if ((_entityId find "eden:module:") isEqualTo 0) then {_entityType = "Module"};
             if ((_entityId find "eden:group:") isEqualTo 0) then {_entityType = "Group"};
             if ((_entityId find "eden:waypoint:") isEqualTo 0) then {_entityType = "Waypoint"};
             if ((_entityId find "eden:layer:") isEqualTo 0) then {_entityType = "Layer"};
@@ -98,6 +99,7 @@ switch (_action) do {
                 if ((_x find "eden:marker:") isEqualTo 0) then {_entityType = "Marker"};
                 if ((_x find "eden:trigger:") isEqualTo 0) then {_entityType = "Trigger"};
                 if ((_x find "eden:logic:") isEqualTo 0) then {_entityType = "Logic"};
+                if ((_x find "eden:module:") isEqualTo 0) then {_entityType = "Module"};
                 if ((_x find "eden:group:") isEqualTo 0) then {_entityType = "Group"};
                 if ((_x find "eden:waypoint:") isEqualTo 0) then {_entityType = "Waypoint"};
                 if ((_x find "eden:layer:") isEqualTo 0) then {_entityType = "Layer"};
@@ -120,6 +122,7 @@ switch (_action) do {
             if ((_entityId find "eden:marker:") isEqualTo 0) then {_entityType = "Marker"};
             if ((_entityId find "eden:trigger:") isEqualTo 0) then {_entityType = "Trigger"};
             if ((_entityId find "eden:logic:") isEqualTo 0) then {_entityType = "Logic"};
+            if ((_entityId find "eden:module:") isEqualTo 0) then {_entityType = "Module"};
             if ((_entityId find "eden:group:") isEqualTo 0) then {_entityType = "Group"};
             if ((_entityId find "eden:waypoint:") isEqualTo 0) then {_entityType = "Waypoint"};
             if ((_entityId find "eden:layer:") isEqualTo 0) then {_entityType = "Layer"};
@@ -295,17 +298,28 @@ switch (_action) do {
         private _missing = [];
         if (!(_params getOrDefault ["dryRun", true])) then {
             private _entities = [];
+            private _groups = [];
             {
                 private _entity = [_x] call AMCP_fnc_resolveEntity;
                 if ([_entity] call _isMissingEntity) then {
                     _missing pushBack _x;
                 } else {
-                    _entities pushBack _entity;
+                    if (_entity isEqualType grpNull) then {
+                        _entities append (units _entity);
+                        _groups pushBack _entity;
+                    } else {
+                        _entities pushBack _entity;
+                    };
                     _deleted pushBack _x;
                 };
             } forEach _ids;
             collect3DENHistory {
-                delete3DENEntities _entities;
+                if (_entities isNotEqualTo []) then {
+                    delete3DENEntities _entities;
+                };
+                {
+                    deleteGroup _x;
+                } forEach _groups;
             };
         } else {
             _deleted = _ids;

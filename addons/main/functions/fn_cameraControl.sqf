@@ -96,7 +96,12 @@ if (_operation isEqualTo "destroyPreviewScene") exitWith {
 if (_operation isEqualTo "captureCurrentView") exitWith {
     private _runId = _params getOrDefault ["runId", format ["amcp_%1", diag_tickTime]];
     private _fileName = _params getOrDefault ["filename", format ["arma-mcp\%1\current.png", [_runId] call _safeSegment]];
-    private _ok = [_fileName] call _capture;
+    private _skipArmaScreenshot = _params getOrDefault ["skipArmaScreenshot", false];
+    private _captureBackend = _params getOrDefault ["captureBackend", ["arma", "linux"] select _skipArmaScreenshot];
+    private _ok = true;
+    if (!_skipArmaScreenshot) then {
+        _ok = [_fileName] call _capture;
+    };
     createHashMapFromArray [
         ["ok", _ok],
         ["status", ["failed", "captured"] select _ok],
@@ -104,7 +109,8 @@ if (_operation isEqualTo "captureCurrentView") exitWith {
             ["angle", "current"],
             ["filename", _fileName],
             ["profile_relative_path", _fileName],
-            ["captured", _ok]
+            ["captured", _ok],
+            ["capture_backend", _captureBackend]
         ]]]
     ]
 };
@@ -128,6 +134,8 @@ private _distance = [_params getOrDefault ["distance", 8], 8] call _number;
 private _height = [_params getOrDefault ["height", 2.2], 2.2] call _number;
 private _fov = [_params getOrDefault ["fov", 0.7], 0.7] call _number;
 private _settleSeconds = [_params getOrDefault ["settleSeconds", 0.25], 0.25] call _number;
+private _skipArmaScreenshot = _params getOrDefault ["skipArmaScreenshot", false];
+private _captureBackend = _params getOrDefault ["captureBackend", ["arma", "linux"] select _skipArmaScreenshot];
 private _safeClass = [_className] call _safeSegment;
 private _safeRun = [_runId] call _safeSegment;
 
@@ -169,7 +177,7 @@ private _screenshots = [];
     uiSleep _settleSeconds;
     private _filename = format ["arma-mcp\%1\%2_%3.png", _safeRun, _safeClass, [_angle] call _safeSegment];
     private _captured = true;
-    if (_operation in ["captureClassAngles", "inspectClass"]) then {
+    if ((_operation in ["captureClassAngles", "inspectClass"]) && {!_skipArmaScreenshot}) then {
         _captured = [_filename] call _capture;
     };
     _screenshots pushBack (createHashMapFromArray [
@@ -177,6 +185,7 @@ private _screenshots = [];
         ["filename", _filename],
         ["profile_relative_path", _filename],
         ["captured", _captured],
+        ["capture_backend", _captureBackend],
         ["camera_position", _cameraPos],
         ["camera_target", _target]
     ]);
@@ -193,7 +202,7 @@ private _scene = createHashMapFromArray [
 ];
 missionNamespace setVariable ["AMCP_previewScene", _scene];
 
-if (_operation in ["captureClassAngles", "inspectClass"]) then {
+if ((_operation in ["captureClassAngles", "inspectClass"]) && {!_skipArmaScreenshot}) then {
     [] call _cleanup;
 };
 

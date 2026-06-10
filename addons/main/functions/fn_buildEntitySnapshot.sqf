@@ -21,6 +21,16 @@ private _vectorUp = [0, 0, 1];
 private _modelPath = "";
 private _bounds = createHashMapFromArray [["min", [0, 0, 0]], ["max", [0, 0, 0]]];
 private _warnings = [];
+private _firstAttributeValue = {
+    params ["_target", "_name", "_fallback"];
+    private _value = _target get3DENAttribute _name;
+    if (_value isEqualType [] && {_value isNotEqualTo []}) then {
+        _value = _value select 0;
+    };
+    if (isNil "_value") exitWith {_fallback};
+    if (_value isEqualType _fallback) exitWith {_value};
+    _fallback
+};
 
 if (_entity isEqualType objNull) then {
     _className = typeOf _entity;
@@ -40,12 +50,21 @@ if (_entity isEqualType objNull) then {
     ];
 } else {
     if (_entity isEqualType "") then {
-        _className = markerType _entity;
+        private _markerRecord = (missionNamespace getVariable ["AMCP_markerMetadata", createHashMap]) getOrDefault [_entity, createHashMap];
+        private _markerValue = {
+            params ["_name", "_fallback"];
+            private _missing = "__AMCP_MARKER_METADATA_MISSING__";
+            private _value = _markerRecord getOrDefault [_name, _missing];
+            if (_value isEqualTo _missing) exitWith {_fallback};
+            if (_value isEqualType _fallback) exitWith {_value};
+            _fallback
+        };
+        _className = ["markerType", [_entity, "markerType", markerType _entity] call _firstAttributeValue] call _markerValue;
         _variableName = _entity;
-        _displayName = markerText _entity;
-        _positionATL = markerPos _entity;
+        _displayName = ["text", [_entity, "text", markerText _entity] call _firstAttributeValue] call _markerValue;
+        _positionATL = ["positionATL", [_entity, "position", markerPos _entity] call _firstAttributeValue] call _markerValue;
         _positionASL = ATLToASL _positionATL;
-        _dir = markerDir _entity;
+        _dir = ["angle", [_entity, "angle", markerDir _entity] call _firstAttributeValue] call _markerValue;
     } else {
         if (_entity isEqualType grpNull) then {
             _variableName = groupId _entity;
@@ -66,7 +85,8 @@ if (_entity isEqualType objNull) then {
                 _className = waypointType _entity;
                 _variableName = format ["%1:%2", groupId _group, _index];
                 _displayName = _className;
-                _positionATL = waypointPosition _entity;
+                private _positionAttribute = _entity get3DENAttribute "position";
+                _positionATL = _positionAttribute param [0, waypointPosition _entity];
                 _positionASL = ATLToASL _positionATL;
             } else {
                 if (_entity isEqualType 0) then {
@@ -107,14 +127,23 @@ if (_includeAttributes) then {
 };
 
 if (_entityType isEqualTo "Marker") then {
+    private _markerRecord = (missionNamespace getVariable ["AMCP_markerMetadata", createHashMap]) getOrDefault [_entity, createHashMap];
+    private _markerValue = {
+        params ["_name", "_fallback"];
+        private _missing = "__AMCP_MARKER_METADATA_MISSING__";
+        private _value = _markerRecord getOrDefault [_name, _missing];
+        if (_value isEqualTo _missing) exitWith {_fallback};
+        if (_value isEqualType _fallback) exitWith {_value};
+        _fallback
+    };
     _snapshot set ["marker", createHashMapFromArray [
-        ["text", markerText _entity],
-        ["type", markerType _entity],
-        ["color", markerColor _entity],
-        ["shape", markerShape _entity],
-        ["size", markerSize _entity],
-        ["alpha", markerAlpha _entity],
-        ["dir", markerDir _entity]
+        ["text", ["text", [_entity, "text", markerText _entity] call _firstAttributeValue] call _markerValue],
+        ["type", ["markerType", [_entity, "markerType", markerType _entity] call _firstAttributeValue] call _markerValue],
+        ["color", ["color", [_entity, "color", markerColor _entity] call _firstAttributeValue] call _markerValue],
+        ["shape", ["shape", [_entity, "shape", markerShape _entity] call _firstAttributeValue] call _markerValue],
+        ["size", ["size", [_entity, "size", markerSize _entity] call _firstAttributeValue] call _markerValue],
+        ["alpha", ["alpha", [_entity, "alpha", markerAlpha _entity] call _firstAttributeValue] call _markerValue],
+        ["dir", ["angle", [_entity, "angle", markerDir _entity] call _firstAttributeValue] call _markerValue]
     ]];
 };
 
@@ -132,11 +161,13 @@ if (_entityType isEqualTo "Group" && {_entity isEqualType grpNull}) then {
 
 if (_entityType isEqualTo "Waypoint" && {_entity isEqualType []}) then {
     private _group = _entity param [0, grpNull];
+    private _positionAttribute = _entity get3DENAttribute "position";
+    private _positionATL = _positionAttribute param [0, waypointPosition _entity];
     _snapshot set ["waypoint", createHashMapFromArray [
         ["groupId", if (_group isEqualType grpNull) then {[_group, "Group"] call AMCP_fnc_registerEntity} else {""}],
         ["index", _entity param [1, -1]],
         ["type", waypointType _entity],
-        ["positionATL", waypointPosition _entity]
+        ["positionATL", _positionATL]
     ]];
 };
 

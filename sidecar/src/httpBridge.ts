@@ -5,6 +5,8 @@ import type { ArmaMcpState, QueuedActionInput } from "./state.js";
 import type { Logger } from "./log.js";
 import { createRuntimeInfo, withRuntimeBridgeUrl, type SidecarRuntimeInfo } from "./runtime.js";
 
+const MAX_BRIDGE_REQUEST_BODY_BYTES = 8 * 1024 * 1024;
+
 export type BridgeConfig = {
   host: string;
   port: number;
@@ -297,7 +299,7 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     total += buffer.length;
-    if (total > 256 * 1024) {
+    if (total > MAX_BRIDGE_REQUEST_BODY_BYTES) {
       throw new Error("request body too large");
     }
     chunks.push(buffer);

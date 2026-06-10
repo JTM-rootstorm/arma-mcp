@@ -7,7 +7,7 @@ private _payload = createHashMapFromArray [
     ["source", "eden"],
     ["sessionId", profileName],
     ["selected", _items],
-    ["allCount", count ((all3DENEntities select 0) + (all3DENEntities select 3))]
+    ["allCount", count ((all3DENEntities select 0) + (all3DENEntities select 4))]
 ];
 
 private _json = toJSON _payload;

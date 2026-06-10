@@ -40,6 +40,17 @@ if ((count _operations) > 250) then {
                 ];
             };
         } else {
+            if (_op isEqualTo "create_marker") then {
+                _className = _x getOrDefault ["markerType", _x getOrDefault ["className", "mil_dot"]];
+                _type = "Marker";
+            };
+            if (_op isEqualTo "create_trigger") then {
+                _className = _x getOrDefault ["className", "EmptyDetector"];
+                _type = "Trigger";
+            };
+            if (_op isEqualTo "create_module") then {
+                _type = "Module";
+            };
             if (_op isEqualTo "create_group") then {
                 _className = _x getOrDefault ["leaderClassName", _x getOrDefault ["className", "B_Soldier_F"]];
             };

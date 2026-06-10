@@ -108,16 +108,25 @@ collect3DENHistory {
                     _ids = [_x get "entityId"];
                 };
                 private _entities = [];
+                private _groups = [];
                 {
                     private _entity = [_x] call AMCP_fnc_resolveEntity;
                     if (!([_entity] call _isMissingEntity)) then {
-                        _entities pushBack _entity;
+                        if (_entity isEqualType grpNull) then {
+                            _entities append (units _entity);
+                            _groups pushBack _entity;
+                        } else {
+                            _entities pushBack _entity;
+                        };
                         _deleted pushBack _x;
                     };
                 } forEach _ids;
                 if (_entities isNotEqualTo []) then {
                     delete3DENEntities _entities;
                 };
+                {
+                    deleteGroup _x;
+                } forEach _groups;
             };
             case "select_entities": {
                 private _entities = [];

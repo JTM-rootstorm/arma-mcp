@@ -22,10 +22,29 @@ while {hasInterface && is3DEN} do {
             } else {
                 private _commands = _body getOrDefault ["commands", []];
                 {
-                    if ((_x getOrDefault ["schemaVersion", 0]) isEqualTo 1 && {(_x getOrDefault ["action", ""]) isNotEqualTo ""}) then {
-                        [_x] call AMCP_fnc_dispatchAction;
-                    } else {
-                        [_x] call AMCP_fnc_applyPlan;
+                    try {
+                        if ((_x getOrDefault ["schemaVersion", 0]) isEqualTo 1 && {(_x getOrDefault ["action", ""]) isNotEqualTo ""}) then {
+                            [_x] call AMCP_fnc_dispatchAction;
+                        } else {
+                            [_x] call AMCP_fnc_applyPlan;
+                        };
+                    } catch {
+                        private _requestId = _x getOrDefault ["requestId", ""];
+                        private _action = _x getOrDefault ["action", "eden.batch"];
+                        [format ["Command %1 failed in poll loop: %2", _action, _exception]] call AMCP_fnc_log;
+                        private _payload = createHashMapFromArray [
+                            ["schemaVersion", 1],
+                            ["requestId", _requestId],
+                            ["ok", false],
+                            ["action", _action],
+                            ["durationMs", 0],
+                            ["warnings", []],
+                            ["error", createHashMapFromArray [
+                                ["code", "SQF_EXCEPTION"],
+                                ["message", str _exception]
+                            ]]
+                        ];
+                        ["postResult", toJSON _payload] call AMCP_fnc_callBridge;
                     };
                 } forEach _commands;
             };

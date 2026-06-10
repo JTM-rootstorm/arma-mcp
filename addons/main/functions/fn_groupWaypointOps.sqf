@@ -69,14 +69,29 @@ private _createUnitInGroup = {
 
 private _waypointRecord = {
     params ["_waypoint"];
+    if !(_waypoint isEqualType []) exitWith {
+        createHashMapFromArray [
+            ["edenId", ""],
+            ["groupId", ""],
+            ["index", -1],
+            ["type", "MOVE"],
+            ["positionATL", [0, 0, 0]],
+            ["attributes", createHashMap],
+            ["warnings", [format ["Skipped non-waypoint entity while reading waypoint links: %1", typeName _waypoint]]]
+        ]
+    };
     private _attributes = [_waypoint, "Waypoint", []] call AMCP_fnc_readEntityAttributes;
     private _group = _waypoint param [0, grpNull];
+    private _type = waypointType _waypoint;
+    if (_type isEqualTo "") then {_type = "MOVE"};
+    private _positionAttribute = _waypoint get3DENAttribute "position";
+    private _positionATL = _positionAttribute param [0, waypointPosition _waypoint];
     createHashMapFromArray [
         ["edenId", [_waypoint, "Waypoint"] call AMCP_fnc_registerEntity],
         ["groupId", if (_group isEqualType grpNull) then {[_group, "Group"] call AMCP_fnc_registerEntity} else {""}],
         ["index", _waypoint param [1, -1]],
-        ["type", waypointType _waypoint],
-        ["positionATL", waypointPosition _waypoint],
+        ["type", _type],
+        ["positionATL", _positionATL],
         ["attributes", _attributes getOrDefault ["attributes", createHashMap]],
         ["warnings", _attributes getOrDefault ["warnings", []]]
     ]
@@ -93,38 +108,39 @@ switch (_operation) do {
         private _callsign = _params getOrDefault ["callsign", ""];
         if (_callsign isNotEqualTo "") then {_groupAttributes set ["name", _callsign]};
 
-        if (_dryRun) exitWith {
-            createHashMapFromArray [
+        if (_dryRun) then {
+            _returnDirect = true;
+            _directResult = createHashMapFromArray [
                 ["dryRun", true],
                 ["wouldCreateGroups", 1],
                 ["wouldCreateUnits", 1],
                 ["side", _sideName],
                 ["leaderClassName", _leaderClassName],
                 ["warnings", ["Eden group creation uses a leader unit because create3DENEntity has no empty Group mode."]]
-            ]
-        };
-
-        collect3DENHistory {
-            private _unit = create3DENEntity ["Object", _leaderClassName, _positionATL];
-            if (!([_unit] call _isMissingObject)) then {
-                [_unit, _transform] call AMCP_fnc_applyTransform;
-                if ((count _attributes) > 0) then {[_unit, _attributes] call AMCP_fnc_applyAttributes};
-                private _group = group _unit;
-                if ((count _groupAttributes) > 0) then {[_group, _groupAttributes] call AMCP_fnc_applyAttributes};
-                private _groupId = [_group, "Group"] call AMCP_fnc_registerEntity;
-                private _unitId = [_unit, "Object"] call AMCP_fnc_registerEntity;
-                _created pushBack createHashMapFromArray [
-                    ["edenId", _groupId],
-                    ["type", "Group"],
-                    ["side", str (side _group)],
-                    ["leaderUnitId", _unitId]
-                ];
-                _created pushBack createHashMapFromArray [
-                    ["edenId", _unitId],
-                    ["type", "Object"],
-                    ["className", _leaderClassName],
-                    ["groupId", _groupId]
-                ];
+            ];
+        } else {
+            collect3DENHistory {
+                private _unit = create3DENEntity ["Object", _leaderClassName, _positionATL];
+                if (!([_unit] call _isMissingObject)) then {
+                    [_unit, _transform] call AMCP_fnc_applyTransform;
+                    if ((count _attributes) > 0) then {[_unit, _attributes] call AMCP_fnc_applyAttributes};
+                    private _group = group _unit;
+                    if ((count _groupAttributes) > 0) then {[_group, _groupAttributes] call AMCP_fnc_applyAttributes};
+                    private _groupId = [_group, "Group"] call AMCP_fnc_registerEntity;
+                    private _unitId = [_unit, "Object"] call AMCP_fnc_registerEntity;
+                    _created pushBack createHashMapFromArray [
+                        ["edenId", _groupId],
+                        ["type", "Group"],
+                        ["side", str (side _group)],
+                        ["leaderUnitId", _unitId]
+                    ];
+                    _created pushBack createHashMapFromArray [
+                        ["edenId", _unitId],
+                        ["type", "Object"],
+                        ["className", _leaderClassName],
+                        ["groupId", _groupId]
+                    ];
+                };
             };
         };
     };
@@ -136,29 +152,30 @@ switch (_operation) do {
         private _positionATL = _transform getOrDefault ["positionATL", [0, 0, 0]];
         private _attributes = _params getOrDefault ["attributes", createHashMap];
 
-        if (_dryRun) exitWith {
-            createHashMapFromArray [
+        if (_dryRun) then {
+            _returnDirect = true;
+            _directResult = createHashMapFromArray [
                 ["dryRun", true],
                 ["wouldCreateUnits", 1],
                 ["className", _className],
                 ["groupId", _groupId],
                 ["warnings", _warnings]
-            ]
-        };
-
-        collect3DENHistory {
-            private _unit = [_group, _className, _positionATL] call _createUnitInGroup;
-            if (!([_unit] call _isMissingObject)) then {
-                [_unit, _transform] call AMCP_fnc_applyTransform;
-                if ((count _attributes) > 0) then {[_unit, _attributes] call AMCP_fnc_applyAttributes};
-                private _unitGroup = group _unit;
-                private _groupOutId = [_unitGroup, "Group"] call AMCP_fnc_registerEntity;
-                _created pushBack createHashMapFromArray [
-                    ["edenId", [_unit, "Object"] call AMCP_fnc_registerEntity],
-                    ["type", "Object"],
-                    ["className", _className],
-                    ["groupId", _groupOutId]
-                ];
+            ];
+        } else {
+            collect3DENHistory {
+                private _unit = [_group, _className, _positionATL] call _createUnitInGroup;
+                if (!([_unit] call _isMissingObject)) then {
+                    [_unit, _transform] call AMCP_fnc_applyTransform;
+                    if ((count _attributes) > 0) then {[_unit, _attributes] call AMCP_fnc_applyAttributes};
+                    private _unitGroup = group _unit;
+                    private _groupOutId = [_unitGroup, "Group"] call AMCP_fnc_registerEntity;
+                    _created pushBack createHashMapFromArray [
+                        ["edenId", [_unit, "Object"] call AMCP_fnc_registerEntity],
+                        ["type", "Object"],
+                        ["className", _className],
+                        ["groupId", _groupOutId]
+                    ];
+                };
             };
         };
     };
@@ -170,22 +187,23 @@ switch (_operation) do {
         if ([_unit] call _isMissingObject) then {_missing pushBack _unitId};
         if (isNull _group) then {_missing pushBack _groupId};
 
-        if (_dryRun) exitWith {
-            createHashMapFromArray [
+        if (_dryRun) then {
+            _returnDirect = true;
+            _directResult = createHashMapFromArray [
                 ["dryRun", true],
                 ["wouldAssign", parseNumber ((count _missing) isEqualTo 0)],
                 ["missing", _missing],
                 ["warnings", ["Existing-unit regrouping uses joinSilent and needs live Eden smoke coverage."]]
-            ]
-        };
-
-        if ((count _missing) isEqualTo 0) then {
-            collect3DENHistory {
-                [_unit] joinSilent _group;
+            ];
+        } else {
+            if ((count _missing) isEqualTo 0) then {
+                collect3DENHistory {
+                    [_unit] joinSilent _group;
+                };
+                _updated pushBack createHashMapFromArray [["edenId", _unitId], ["groupId", _groupId]];
             };
-            _updated pushBack createHashMapFromArray [["edenId", _unitId], ["groupId", _groupId]];
+            _warnings pushBack "Existing-unit regrouping uses joinSilent and needs live Eden smoke coverage.";
         };
-        _warnings pushBack "Existing-unit regrouping uses joinSilent and needs live Eden smoke coverage.";
     };
     case "listGroupUnits": {
         private _groupId = _params getOrDefault ["groupId", ""];
@@ -227,30 +245,35 @@ switch (_operation) do {
         private _attributes = _params getOrDefault ["attributes", createHashMap];
         if (isNull _group) then {_missing pushBack _groupId};
 
-        if (_dryRun) exitWith {
-            createHashMapFromArray [
+        if (_dryRun) then {
+            _returnDirect = true;
+            _directResult = createHashMapFromArray [
                 ["dryRun", true],
                 ["wouldCreateWaypoints", parseNumber ((count _missing) isEqualTo 0)],
                 ["groupId", _groupId],
                 ["className", _className],
+                ["positionATL", _positionATL],
                 ["missing", _missing],
                 ["warnings", _warnings]
-            ]
-        };
-
-        if ((count _missing) isEqualTo 0) then {
-            collect3DENHistory {
-                private _waypoint = _group create3DENEntity ["Waypoint", _className, _positionATL];
-                if (_waypoint isEqualType []) then {
-                    if ((count _attributes) > 0) then {[_waypoint, _attributes] call AMCP_fnc_applyAttributes};
-                    private _record = [_waypoint] call _waypointRecord;
-                    _created pushBack createHashMapFromArray [
-                        ["edenId", _record get "edenId"],
-                        ["type", "Waypoint"],
-                        ["className", _className],
-                        ["groupId", _record get "groupId"],
-                        ["index", _record get "index"]
-                    ];
+            ];
+        } else {
+            if ((count _missing) isEqualTo 0) then {
+                collect3DENHistory {
+                    private _waypoint = _group create3DENEntity ["Waypoint", _className, _positionATL];
+                    if (_waypoint isEqualType []) then {
+                        _waypoint setWaypointType _className;
+                        [_waypoint, _transform] call AMCP_fnc_applyTransform;
+                        if ((count _attributes) > 0) then {[_waypoint, _attributes] call AMCP_fnc_applyAttributes};
+                        private _record = [_waypoint] call _waypointRecord;
+                        _created pushBack createHashMapFromArray [
+                            ["edenId", _record get "edenId"],
+                            ["type", "Waypoint"],
+                            ["className", _record getOrDefault ["type", _className]],
+                            ["groupId", _record get "groupId"],
+                            ["index", _record get "index"],
+                            ["positionATL", _record get "positionATL"]
+                        ];
+                    };
                 };
             };
         };
@@ -259,39 +282,43 @@ switch (_operation) do {
         private _waypointId = _params getOrDefault ["waypointId", _params getOrDefault ["entityId", ""]];
         private _waypoint = [_waypointId] call _resolveWaypoint;
         if ((count _waypoint) isEqualTo 0) then {_missing pushBack _waypointId};
-        if (_dryRun) exitWith {
-            createHashMapFromArray [
+        if (_dryRun) then {
+            _returnDirect = true;
+            _directResult = createHashMapFromArray [
                 ["dryRun", true],
                 ["wouldUpdate", parseNumber ((count _missing) isEqualTo 0)],
                 ["missing", _missing],
                 ["attributes", keys (_params getOrDefault ["attributes", createHashMap])]
-            ]
-        };
-        if ((count _missing) isEqualTo 0) then {
-            collect3DENHistory {
-                private _attributeResult = [_waypoint, _params getOrDefault ["attributes", createHashMap]] call AMCP_fnc_applyAttributes;
-                _warnings append (_attributeResult getOrDefault ["warnings", []]);
+            ];
+        } else {
+            if ((count _missing) isEqualTo 0) then {
+                collect3DENHistory {
+                    private _attributeResult = [_waypoint, _params getOrDefault ["attributes", createHashMap]] call AMCP_fnc_applyAttributes;
+                    _warnings append (_attributeResult getOrDefault ["warnings", []]);
+                };
+                _updated pushBack createHashMapFromArray [["edenId", _waypointId], ["op", "setWaypointAttributes"]];
             };
-            _updated pushBack createHashMapFromArray [["edenId", _waypointId], ["op", "setWaypointAttributes"]];
         };
     };
     case "deleteWaypoint": {
         private _waypointId = _params getOrDefault ["waypointId", _params getOrDefault ["entityId", ""]];
         private _waypoint = [_waypointId] call _resolveWaypoint;
         if ((count _waypoint) isEqualTo 0) then {_missing pushBack _waypointId};
-        if (_dryRun) exitWith {
-            createHashMapFromArray [
+        if (_dryRun) then {
+            _returnDirect = true;
+            _directResult = createHashMapFromArray [
                 ["dryRun", true],
                 ["wouldDelete", parseNumber ((count _missing) isEqualTo 0)],
                 ["missing", _missing],
                 ["warnings", _warnings]
-            ]
-        };
-        if ((count _missing) isEqualTo 0) then {
-            collect3DENHistory {
-                delete3DENEntities [_waypoint];
+            ];
+        } else {
+            if ((count _missing) isEqualTo 0) then {
+                collect3DENHistory {
+                    delete3DENEntities [_waypoint];
+                };
+                _deleted pushBack _waypointId;
             };
-            _deleted pushBack _waypointId;
         };
     };
     case "reorderWaypoints": {
@@ -309,35 +336,42 @@ switch (_operation) do {
             };
         } forEach _orderedIds;
 
-        if (_dryRun) exitWith {
-            createHashMapFromArray [
+        if (_dryRun) then {
+            _returnDirect = true;
+            _directResult = createHashMapFromArray [
                 ["dryRun", true],
                 ["wouldReorder", count _records],
                 ["missing", _missing],
                 ["warnings", ["Waypoint reordering recreates waypoints to preserve order; Eden IDs will change after apply."]]
-            ]
-        };
-
-        if ((count _missing) isEqualTo 0) then {
-            collect3DENHistory {
-                {
-                    private _waypoint = [_x] call _resolveWaypoint;
-                    if ((count _waypoint) > 0) then {delete3DENEntities [_waypoint]};
-                } forEach _orderedIds;
-                {
-                    private _newWaypoint = _group create3DENEntity ["Waypoint", _x getOrDefault ["type", "MOVE"], _x getOrDefault ["positionATL", [0, 0, 0]]];
-                    if (_newWaypoint isEqualType []) then {
-                        [_newWaypoint, _x getOrDefault ["attributes", createHashMap]] call AMCP_fnc_applyAttributes;
-                        _created pushBack createHashMapFromArray [
-                            ["edenId", [_newWaypoint, "Waypoint"] call AMCP_fnc_registerEntity],
-                            ["type", "Waypoint"],
-                            ["groupId", [_group, "Group"] call AMCP_fnc_registerEntity],
-                            ["previousEdenId", _x getOrDefault ["edenId", ""]]
-                        ];
+            ];
+        } else {
+            if ((count _missing) isEqualTo 0) then {
+                collect3DENHistory {
+                    {
+                        private _waypoint = [_x] call _resolveWaypoint;
+                        if ((count _waypoint) > 0) then {delete3DENEntities [_waypoint]};
+                    } forEach _orderedIds;
+                    {
+                        private _wpType = _x getOrDefault ["type", "MOVE"];
+                        private _wpPos = _x getOrDefault ["positionATL", [0, 0, 0]];
+                        private _newWaypoint = _group create3DENEntity ["Waypoint", _wpType, _wpPos];
+                        if (_newWaypoint isEqualType []) then {
+                            _newWaypoint setWaypointType _wpType;
+                            [_newWaypoint, createHashMapFromArray [["positionATL", _wpPos]]] call AMCP_fnc_applyTransform;
+                            [_newWaypoint, _x getOrDefault ["attributes", createHashMap]] call AMCP_fnc_applyAttributes;
+                            _created pushBack createHashMapFromArray [
+                                ["edenId", [_newWaypoint, "Waypoint"] call AMCP_fnc_registerEntity],
+                                ["type", "Waypoint"],
+                                ["className", _wpType],
+                                ["groupId", [_group, "Group"] call AMCP_fnc_registerEntity],
+                                ["positionATL", waypointPosition _newWaypoint],
+                                ["previousEdenId", _x getOrDefault ["edenId", ""]]
+                            ];
+                        };
                     };
-                } forEach _records;
+                };
+                _warnings pushBack "Waypoint reordering recreates waypoints to preserve order; Eden IDs changed.";
             };
-            _warnings pushBack "Waypoint reordering recreates waypoints to preserve order; Eden IDs changed.";
         };
     };
     case "attachWaypoint": {
@@ -349,31 +383,38 @@ switch (_operation) do {
         if (isNull _group) then {_missing pushBack _groupId};
         private _record = if ((count _waypoint) > 0) then {[_waypoint] call _waypointRecord} else {createHashMap};
 
-        if (_dryRun) exitWith {
-            createHashMapFromArray [
+        if (_dryRun) then {
+            _returnDirect = true;
+            _directResult = createHashMapFromArray [
                 ["dryRun", true],
                 ["wouldAttach", parseNumber ((count _missing) isEqualTo 0)],
                 ["missing", _missing],
                 ["warnings", ["Waypoint group reassignment recreates the waypoint under the target group."]]
-            ]
-        };
-
-        if ((count _missing) isEqualTo 0) then {
-            collect3DENHistory {
-                delete3DENEntities [_waypoint];
-                private _newWaypoint = _group create3DENEntity ["Waypoint", _record getOrDefault ["type", "MOVE"], _record getOrDefault ["positionATL", [0, 0, 0]]];
-                if (_newWaypoint isEqualType []) then {
-                    [_newWaypoint, _record getOrDefault ["attributes", createHashMap]] call AMCP_fnc_applyAttributes;
-                    _created pushBack createHashMapFromArray [
-                        ["edenId", [_newWaypoint, "Waypoint"] call AMCP_fnc_registerEntity],
-                        ["type", "Waypoint"],
-                        ["groupId", [_group, "Group"] call AMCP_fnc_registerEntity],
-                        ["previousEdenId", _waypointId]
-                    ];
-                    _deleted pushBack _waypointId;
+            ];
+        } else {
+            if ((count _missing) isEqualTo 0) then {
+                collect3DENHistory {
+                    delete3DENEntities [_waypoint];
+                    private _wpType = _record getOrDefault ["type", "MOVE"];
+                    private _wpPos = _record getOrDefault ["positionATL", [0, 0, 0]];
+                    private _newWaypoint = _group create3DENEntity ["Waypoint", _wpType, _wpPos];
+                    if (_newWaypoint isEqualType []) then {
+                        _newWaypoint setWaypointType _wpType;
+                        [_newWaypoint, createHashMapFromArray [["positionATL", _wpPos]]] call AMCP_fnc_applyTransform;
+                        [_newWaypoint, _record getOrDefault ["attributes", createHashMap]] call AMCP_fnc_applyAttributes;
+                        _created pushBack createHashMapFromArray [
+                            ["edenId", [_newWaypoint, "Waypoint"] call AMCP_fnc_registerEntity],
+                            ["type", "Waypoint"],
+                            ["className", _wpType],
+                            ["groupId", [_group, "Group"] call AMCP_fnc_registerEntity],
+                            ["positionATL", waypointPosition _newWaypoint],
+                            ["previousEdenId", _waypointId]
+                        ];
+                        _deleted pushBack _waypointId;
+                    };
                 };
+                _warnings pushBack "Waypoint group reassignment recreated the waypoint under the target group.";
             };
-            _warnings pushBack "Waypoint group reassignment recreated the waypoint under the target group.";
         };
     };
     case "getGroupLinks": {
@@ -386,7 +427,7 @@ switch (_operation) do {
         private _waypointId = _params getOrDefault ["waypointId", ""];
         private _waypoints = [];
         if (_waypointId isEqualTo "") then {
-            _waypoints = (all3DENEntities param [3, []]);
+            _waypoints = (all3DENEntities param [4, []]) select {_x isEqualType []};
         } else {
             private _waypoint = [_waypointId] call _resolveWaypoint;
             if ((count _waypoint) isEqualTo 0) then {_missing pushBack _waypointId} else {_waypoints = [_waypoint]};

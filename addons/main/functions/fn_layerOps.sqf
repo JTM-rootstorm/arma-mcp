@@ -41,9 +41,9 @@ private _findLayerId = {
 };
 
 private _ensureLayerId = {
-    params ["_layer", "_warnings"];
+    params ["_layer", "_warnings", ["_allowCreate", true]];
     private _layerId = [_layer] call _findLayerId;
-    if (_layerId isEqualTo -999999 && {_layer getOrDefault ["createIfMissing", false]}) then {
+    if (_allowCreate && {_layerId isEqualTo -999999} && {_layer getOrDefault ["createIfMissing", false]}) then {
         private _name = _layer getOrDefault ["name", ""];
         if (_name isNotEqualTo "") then {
             private _parentLayerId = _layer getOrDefault ["parentLayerId", -1];
@@ -108,7 +108,7 @@ switch (_operation) do {
             _layer = createHashMapFromArray [["name", _layer], ["createIfMissing", true], ["parentLayerId", -1]];
         };
         private _entityIds = _params getOrDefault ["entityIds", []];
-        private _layerId = [_layer, _warnings] call _ensureLayerId;
+        private _layerId = [_layer, _warnings, !_dryRun] call _ensureLayerId;
         private _assigned = [];
         private _missing = [];
         if (_dryRun) exitWith {

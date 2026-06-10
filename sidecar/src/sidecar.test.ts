@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -44,8 +44,16 @@ import {
 } from "./generators.js";
 import { isRecoverableListenError, shouldSkipHttpListen, startHttpBridge, type StartedBridge } from "./httpBridge.js";
 import { logger } from "./log.js";
-import { MCP_DISCOVERY_FALLBACK_TOOL_NAMES, pruneTerminalCatalogScanJobIds, recommendCatalogRole } from "./mcpServer.js";
-import { mirrorProfileScreenshot } from "./screenshotPaths.js";
+import {
+  exportEdenInstructions,
+  exportPlanSqf,
+  findSimilarCatalogClasses,
+  MCP_DISCOVERY_FALLBACK_TOOL_NAMES,
+  normalizeEntityListParams,
+  pruneTerminalCatalogScanJobIds,
+  recommendCatalogRole
+} from "./mcpServer.js";
+import { captureLinuxScreenshotFallback, mirrorProfileScreenshot, shouldSkipArmaScreenshotCommand } from "./screenshotPaths.js";
 import { createRemoteBridgeState } from "./remoteBridgeState.js";
 import { compositionPlanSchema } from "./schema.js";
 import { createState } from "./state.js";
@@ -219,11 +227,13 @@ describe("catalog database", () => {
   it("does not mark zero-byte screenshots as copied into cache", () => {
     const oldSourceDir = process.env.ARMA_MCP_SCREENSHOT_SOURCE_DIR;
     const oldTimeout = process.env.ARMA_MCP_SCREENSHOT_READY_TIMEOUT_MS;
+    const oldFallback = process.env.ARMA_MCP_SCREENSHOT_FALLBACK;
     const dir = mkdtempSync(join(tmpdir(), "arma-mcp-screenshots-"));
     tempDirs.push(dir);
     try {
       process.env.ARMA_MCP_SCREENSHOT_SOURCE_DIR = dir;
       process.env.ARMA_MCP_SCREENSHOT_READY_TIMEOUT_MS = "0";
+      process.env.ARMA_MCP_SCREENSHOT_FALLBACK = "0";
       mkdirSync(join(dir, "arma-mcp", "run"), { recursive: true });
       writeFileSync(join(dir, "arma-mcp", "run", "empty.png"), "");
 
@@ -246,6 +256,90 @@ describe("catalog database", () => {
         delete process.env.ARMA_MCP_SCREENSHOT_READY_TIMEOUT_MS;
       } else {
         process.env.ARMA_MCP_SCREENSHOT_READY_TIMEOUT_MS = oldTimeout;
+      }
+      if (oldFallback === undefined) {
+        delete process.env.ARMA_MCP_SCREENSHOT_FALLBACK;
+      } else {
+        process.env.ARMA_MCP_SCREENSHOT_FALLBACK = oldFallback;
+      }
+    }
+  });
+
+  it("can fall back to a Linux screenshot tool when Arma profile PNGs are empty", () => {
+    const oldTool = process.env.ARMA_MCP_SCREENSHOT_FALLBACK_TOOL;
+    const oldMode = process.env.ARMA_MCP_SCREENSHOT_FALLBACK_MODE;
+    const oldFallback = process.env.ARMA_MCP_SCREENSHOT_FALLBACK;
+    const dir = mkdtempSync(join(tmpdir(), "arma-mcp-linux-screenshot-"));
+    tempDirs.push(dir);
+    const tool = join(dir, "spectacle");
+    const target = join(dir, "cache", "fallback.png");
+    try {
+      writeFileSync(
+        tool,
+        [
+          "#!/bin/sh",
+          "out=\"\"",
+          "while [ \"$#\" -gt 0 ]; do",
+          "  if [ \"$1\" = \"--output\" ]; then shift; out=\"$1\"; fi",
+          "  shift",
+          "done",
+          "mkdir -p \"${out%/*}\"",
+          "printf fake-png > \"$out\""
+        ].join("\n")
+      );
+      chmodSync(tool, 0o755);
+      process.env.ARMA_MCP_SCREENSHOT_FALLBACK_TOOL = tool;
+      process.env.ARMA_MCP_SCREENSHOT_FALLBACK_MODE = "activewindow";
+      process.env.ARMA_MCP_SCREENSHOT_FALLBACK = "auto";
+
+      expect(captureLinuxScreenshotFallback(target)).toMatchObject({
+        captured: true,
+        method: "spectacle:activewindow"
+      });
+      expect(readFileSync(target, "utf8")).toBe("fake-png");
+    } finally {
+      if (oldTool === undefined) {
+        delete process.env.ARMA_MCP_SCREENSHOT_FALLBACK_TOOL;
+      } else {
+        process.env.ARMA_MCP_SCREENSHOT_FALLBACK_TOOL = oldTool;
+      }
+      if (oldMode === undefined) {
+        delete process.env.ARMA_MCP_SCREENSHOT_FALLBACK_MODE;
+      } else {
+        process.env.ARMA_MCP_SCREENSHOT_FALLBACK_MODE = oldMode;
+      }
+      if (oldFallback === undefined) {
+        delete process.env.ARMA_MCP_SCREENSHOT_FALLBACK;
+      } else {
+        process.env.ARMA_MCP_SCREENSHOT_FALLBACK = oldFallback;
+      }
+    }
+  });
+
+  it("can select the Linux screenshot backend without calling Arma screenshot", () => {
+    const oldBackend = process.env.ARMA_MCP_SCREENSHOT_BACKEND;
+    const oldSkip = process.env.ARMA_MCP_SCREENSHOT_SKIP_ARMA;
+    try {
+      delete process.env.ARMA_MCP_SCREENSHOT_BACKEND;
+      delete process.env.ARMA_MCP_SCREENSHOT_SKIP_ARMA;
+      expect(shouldSkipArmaScreenshotCommand()).toBe(false);
+
+      process.env.ARMA_MCP_SCREENSHOT_BACKEND = "linux";
+      expect(shouldSkipArmaScreenshotCommand()).toBe(true);
+
+      process.env.ARMA_MCP_SCREENSHOT_BACKEND = "arma";
+      process.env.ARMA_MCP_SCREENSHOT_SKIP_ARMA = "1";
+      expect(shouldSkipArmaScreenshotCommand()).toBe(true);
+    } finally {
+      if (oldBackend === undefined) {
+        delete process.env.ARMA_MCP_SCREENSHOT_BACKEND;
+      } else {
+        process.env.ARMA_MCP_SCREENSHOT_BACKEND = oldBackend;
+      }
+      if (oldSkip === undefined) {
+        delete process.env.ARMA_MCP_SCREENSHOT_SKIP_ARMA;
+      } else {
+        process.env.ARMA_MCP_SCREENSHOT_SKIP_ARMA = oldSkip;
       }
     }
   });
@@ -686,6 +780,129 @@ describe("catalog database", () => {
     }
   });
 
+  it("keeps generator role recommendations away from wrecks and loose magazines", () => {
+    const catalog = openCatalogDb(tempCatalogPath());
+    try {
+      ensureCatalogSchema(catalog);
+      writeScanManifest(catalog, {
+        scanId: "scan_generators",
+        loadedModsHash: "mods",
+        loadedAddonsHash: "addons",
+        status: "complete"
+      });
+      for (const item of [
+        {
+          className: "Plane_Fighter_03_wreck",
+          displayName: "Wrecked Fighter",
+          kind: "structure",
+          tags: ["structure"],
+          modelPath: "\\a3\\wrecks\\fighter.p3d"
+        },
+        {
+          className: "Land_Cargo_Patrol_V1_F",
+          displayName: "Cargo Patrol Tower",
+          kind: "structure",
+          tags: ["structure", "bunker"],
+          modelPath: "\\a3\\structures_f\\cargo_patrol.p3d"
+        },
+        {
+          className: "OPTRE_PlaceableMagazine_M41_M19SmokeB",
+          displayName: "Placeable Magazine",
+          kind: "prop",
+          tags: ["supply"],
+          modelPath: "\\optre\\magazine.p3d"
+        },
+        {
+          className: "Box_NATO_AmmoVeh_F",
+          displayName: "NATO Ammo Supply Box",
+          kind: "supply",
+          tags: ["supply", "ammo_crate"],
+          modelPath: "\\a3\\supplies\\ammo_box.p3d"
+        },
+        {
+          className: "3AS_CIS_Console_Wall_Prop",
+          displayName: "CIS Console Wall",
+          kind: "fortification",
+          subkind: "console",
+          tags: ["fortification", "wall_segment"],
+          modelPath: "\\3as\\console_wall.p3d"
+        },
+        {
+          className: "Land_HBarrier_3_F",
+          displayName: "H-Barrier",
+          kind: "fortification",
+          tags: ["fortification", "wall_segment"],
+          modelPath: "\\a3\\fortifications\\hbarrier.p3d"
+        }
+      ]) {
+        upsertCatalogClass(catalog, {
+          className: item.className,
+          latestScanId: "scan_generators",
+          configPath: "CfgVehicles",
+          displayName: item.displayName,
+          kind: item.kind,
+          subkind: item.subkind,
+          modelPath: item.modelPath,
+          scope: 2,
+          tags: item.tags
+        });
+        upsertClassTags(
+          catalog,
+          item.className,
+          item.tags.map((tag) => ({ tag, confidence: 0.9 }))
+        );
+        updateFtsIndex(catalog, item.className);
+      }
+
+      expect(recommendCatalogRole(catalog, "generator_structure", 3)[0]).toMatchObject({ class_name: "Land_Cargo_Patrol_V1_F" });
+      expect(recommendCatalogRole(catalog, "generator_supply", 3)[0]).toMatchObject({ class_name: "Box_NATO_AmmoVeh_F" });
+      expect(recommendCatalogRole(catalog, "generator_fortification", 3)[0]).toMatchObject({ class_name: "Land_HBarrier_3_F" });
+    } finally {
+      closeCatalogDb(catalog);
+    }
+  });
+
+  it("keeps medical-bed similarity on medical furniture instead of terminals", () => {
+    const catalog = openCatalogDb(tempCatalogPath());
+    try {
+      ensureCatalogSchema(catalog);
+      writeScanManifest(catalog, {
+        scanId: "scan_similarity",
+        loadedModsHash: "mods",
+        loadedAddonsHash: "addons",
+        status: "complete"
+      });
+      for (const item of [
+        { className: "3AS_Medical_Bed", displayName: "Medical Bed", tags: ["prop", "medical"], subkind: "bed" },
+        { className: "3AS_Medical_Scanner", displayName: "Medical Scanner", tags: ["prop", "medical"], subkind: "scanner" },
+        { className: "3AS_Terminal_Med_Wall_1", displayName: "Medical Terminal Wall", tags: ["prop", "medical", "terminal"], subkind: "terminal" },
+        { className: "Box_I_UAV_06_medical_F", displayName: "Medical Case", tags: ["prop", "medical", "medical_crate"], subkind: "case" }
+      ]) {
+        upsertCatalogClass(catalog, {
+          className: item.className,
+          latestScanId: "scan_similarity",
+          configPath: "CfgVehicles",
+          displayName: item.displayName,
+          kind: "prop",
+          subkind: item.subkind,
+          modelPath: "\\a3\\props_f\\medical.p3d",
+          scope: 2,
+          tags: item.tags
+        });
+        upsertClassTags(
+          catalog,
+          item.className,
+          item.tags.map((tag) => ({ tag, confidence: 0.9 }))
+        );
+        updateFtsIndex(catalog, item.className);
+      }
+
+      expect(findSimilarCatalogClasses(catalog, "3AS_Medical_Bed", 3)[0]).toMatchObject({ class_name: "3AS_Medical_Scanner" });
+    } finally {
+      closeCatalogDb(catalog);
+    }
+  });
+
   it("keeps object-style repair searches from defaulting to units", () => {
     const catalog = openCatalogDb(tempCatalogPath());
     try {
@@ -999,6 +1216,16 @@ describe("synthetic Eden action inventory", () => {
     expect(missing).toEqual([]);
   });
 
+  it("keeps first-class catalog similarity routed through the shared scorer", () => {
+    const mcpServer = sqf("sidecar/src/mcpServer.ts");
+    const registrationIndex = mcpServer.indexOf('server.registerTool(\n    "arma.catalog.findSimilar"');
+    const registrationBody = mcpServer.slice(registrationIndex, registrationIndex + 900);
+
+    expect(registrationIndex).toBeGreaterThanOrEqual(0);
+    expect(registrationBody).toContain("findSimilarCatalogClasses(catalogDb, parsed.className, parsed.limit)");
+    expect(registrationBody).not.toContain("searchCatalogClasses(catalogDb, { kind:");
+  });
+
   it("keeps fallback-routed direct tools represented in the manifest", () => {
     const manifestTools = new Set<string>(PUBLIC_DIRECT_MCP_TOOLS);
     const directFallbackTools = MCP_DISCOVERY_FALLBACK_TOOL_NAMES.filter((toolName) =>
@@ -1149,13 +1376,110 @@ describe("synthetic Eden action inventory", () => {
     expect(missing).toEqual([]);
   });
 
+  it("keeps connection operation result maps free of inline conditional scope hazards", () => {
+    const connections = sqf("addons/main/functions/fn_connectionOps.sqf");
+
+    expect(connections).toContain("private _updated = [];");
+    expect(connections).toContain("if (_ok) then {_updated = _entityIds};");
+    expect(connections).toContain("add3DENConnection [_connectionType, _sources, _target];");
+    expect(connections).toContain("remove3DENConnection [_connectionType, _sources, _target];");
+    expect(connections).not.toContain("_ok = add3DENConnection");
+    expect(connections).not.toContain("_ok = remove3DENConnection");
+    expect(connections).not.toContain('["updated", if (_ok) then {_entityIds} else {[]}]');
+  });
+
+  it("deletes group ids explicitly instead of reporting delete3DENEntities-only cleanup", () => {
+    const dispatch = sqf("addons/main/functions/fn_dispatchAction.sqf");
+    const batch = sqf("addons/main/functions/fn_applyBatch.sqf");
+
+    for (const source of [dispatch, batch]) {
+      expect(source).toContain("private _groups = [];");
+      expect(source).toContain("_entity isEqualType grpNull");
+      expect(source).toContain("_entities append (units _entity);");
+      expect(source).toContain("deleteGroup _x;");
+    }
+  });
+
   it("normalizes marker top-level fields before create/apply", () => {
     const createEntity = sqf("addons/main/functions/fn_createEntity.sqf");
+    const applyAttributes = sqf("addons/main/functions/fn_applyAttributes.sqf");
+    const readAttributes = sqf("addons/main/functions/fn_readEntityAttributes.sqf");
+    const applyTransform = sqf("addons/main/functions/fn_applyTransform.sqf");
 
     expect(createEntity).toContain('if (_entityType isEqualTo "Marker")');
     for (const field of ["text", "markerType", "color", "shape", "brush", "alpha", "size", "angle"]) {
       expect(createEntity).toContain(field);
     }
+    expect(applyAttributes).toContain('if (_entity isEqualType "") exitWith');
+    expect(applyAttributes).toContain("setMarkerText");
+    expect(applyAttributes).toContain('_entity set3DENAttribute ["markerType"');
+    expect(readAttributes).toContain('[_entity, "markerType", markerType _entity] call _firstAttributeValue');
+    expect(applyTransform).toContain("setMarkerPos");
+    expect(applyTransform).toContain('_entity set3DENAttribute ["position"');
+    expect(applyTransform).toContain('_entity set3DENAttribute ["angle"');
+    expect(applyTransform).toContain('_entity get3DENAttribute "position"');
+    expect(sqf("addons/main/functions/fn_groupWaypointOps.sqf")).toContain('_waypoint get3DENAttribute "position"');
+    expect(sqf("addons/main/functions/fn_buildEntitySnapshot.sqf")).toContain('_entity get3DENAttribute "position"');
+  });
+
+  it("reads and writes trigger area through runtime trigger area APIs", () => {
+    const applyAttributes = sqf("addons/main/functions/fn_applyAttributes.sqf");
+    const readAttributes = sqf("addons/main/functions/fn_readEntityAttributes.sqf");
+
+    expect(applyAttributes).toContain("triggerArea _entity");
+    expect(applyAttributes).toContain("_entity setTriggerArea [_sizeA, _sizeB, _angle, _isRectangle]");
+    expect(readAttributes).toContain("triggerArea _entity");
+    expect(readAttributes).toContain('case "sizea"');
+  });
+
+  it("allows layer assignment dry-runs without target entities", () => {
+    const mcpServer = readFileSync(join(repoRoot, "sidecar", "src", "mcpServer.ts"), "utf8");
+
+    expect(mcpServer).toContain("entityIds: z.array(entityIdSchema).max(100).default([])");
+  });
+
+  it("normalizes entity finder aliases before bridge dispatch", () => {
+    expect(
+      normalizeEntityListParams({
+        type: "Object",
+        className: "Land_HelipadEmpty_F",
+        variableName: "amcp_live_object",
+        includeAttributes: false,
+        includeConfig: true,
+        includeModel: false,
+        limit: 25
+      })
+    ).toMatchObject({
+      types: ["Object"],
+      classNameContains: "Land_HelipadEmpty_F",
+      variableNameContains: "amcp_live_object"
+    });
+  });
+
+  it("keeps the Eden poll loop alive after per-command SQF exceptions", () => {
+    const pollCommands = sqf("addons/main/functions/fn_pollCommands.sqf");
+
+    expect(pollCommands).toContain("try {");
+    expect(pollCommands).toContain("} catch {");
+    expect(pollCommands).toContain('"code", "SQF_EXCEPTION"');
+    expect(pollCommands).toContain('["postResult", toJSON _payload] call AMCP_fnc_callBridge');
+  });
+
+  it("allows camera captures to use an external Linux screenshot backend", () => {
+    const cameraControl = sqf("addons/main/functions/fn_cameraControl.sqf");
+
+    expect(cameraControl).toContain('"skipArmaScreenshot"');
+    expect(cameraControl).toContain('"captureBackend"');
+    expect(cameraControl).toContain('if (!_skipArmaScreenshot) then');
+    expect(cameraControl).toContain('["capture_backend", _captureBackend]');
+  });
+
+  it("keeps batch validation aligned with marker and trigger wrapper fields", () => {
+    const validator = sqf("addons/main/functions/fn_validateBatch.sqf");
+
+    expect(validator).toContain('if (_op isEqualTo "create_marker")');
+    expect(validator).toContain('"markerType"');
+    expect(validator).toContain('"EmptyDetector"');
   });
 
   it("keeps spatial actions routed through a structured SQF helper", () => {
@@ -1247,9 +1571,25 @@ describe("synthetic Eden action inventory", () => {
     }
     expect(config).toContain("class groupWaypointOps");
     expect(helper).toContain('create3DENEntity ["Waypoint"');
+    expect(helper).toContain("setWaypointType _className");
+    expect(helper).toContain("[_waypoint, _transform] call AMCP_fnc_applyTransform");
+    expect(helper).toContain('["wouldCreateWaypoints"');
+    expect(helper).toContain("_returnDirect = true");
+    expect(helper).toContain("(all3DENEntities param [4, []]) select {_x isEqualType []}");
+    expect(helper).toContain('if !(_waypoint isEqualType []) exitWith');
     expect(helper).toContain("joinSilent");
+    expect(sqf("addons/main/functions/fn_edenListEntities.sqf")).toContain('["Object", "Group", "Trigger", "Logic", "Waypoint", "Marker"]');
+    expect(sqf("addons/main/functions/fn_edenGetStatus.sqf")).toContain('["waypoints", count (_all param [4, []])]');
     expect(dispatcher).toContain('if ((_entityId find "eden:group:") isEqualTo 0)');
     expect(dispatcher).toContain('if ((_entityId find "eden:waypoint:") isEqualTo 0)');
+  });
+
+  it("keeps layer dry-runs from creating missing layers", () => {
+    const layers = sqf("addons/main/functions/fn_layerOps.sqf");
+
+    expect(layers).toContain('params ["_layer", "_warnings", ["_allowCreate", true]]');
+    expect(layers).toContain("_allowCreate && {_layerId isEqualTo -999999}");
+    expect(layers).toContain("[_layer, _warnings, !_dryRun] call _ensureLayerId");
   });
 
   it("keeps composition capture/apply portable across local relationship copies", () => {
@@ -1269,6 +1609,35 @@ describe("synthetic Eden action inventory", () => {
     expect(apply).toContain('["sync"');
     expect(apply).toContain("wouldCreateWaypoints");
     expect(apply).toContain("wouldAssignGroups");
+  });
+
+  it("exports batch and generator composition plans as SQF and Eden instructions", () => {
+    const batchPlan = {
+      operations: [
+        {
+          op: "create_entity",
+          type: "Object",
+          className: "Land_HelipadEmpty_F",
+          transform: { positionATL: [1, 2, 0], dir: 45 }
+        }
+      ]
+    };
+    const generatorPlan = {
+      anchor: { positionATL: [10, 20, 0], dir: 90 },
+      operations: [
+        { type: "createObject", className: "Land_HBarrier_3_F", offset: [2, 0, 0], directionOffset: 15 },
+        { type: "createMarker", markerType: "mil_dot", offset: [0, 3, 0], text: "Checkpoint" }
+      ]
+    };
+    const entityPlan = {
+      entities: [{ clientRef: "preview", type: "Object", className: "Land_Cargo20_military_green_F", transform: { positionATL: [5, 6, 0] } }]
+    };
+
+    expect(exportPlanSqf(batchPlan)).toContain("Land_HelipadEmpty_F");
+    expect(exportPlanSqf(generatorPlan)).toContain("Land_HBarrier_3_F");
+    expect(exportPlanSqf(generatorPlan)).toContain("setMarkerText");
+    expect(exportPlanSqf(entityPlan)).toContain("Land_Cargo20_military_green_F");
+    expect(exportEdenInstructions(generatorPlan)).toContain('2. Place marker mil_dot at [10,23,0] facing 90 degrees with text "Checkpoint".');
   });
 });
 
@@ -1662,6 +2031,62 @@ describe("HTTP bridge auth", () => {
     });
     expect(response.status).toBe(200);
     expect(state.getLastSnapshot()?.selected).toHaveLength(1);
+  });
+
+  it("accepts catalog-sized action result bodies", async () => {
+    const state = createState();
+    const bridge = await startHttpBridge(state, logger, {
+      host: "127.0.0.1",
+      port: 0,
+      token: "test-token",
+      generatedToken: false
+    });
+    bridges.push(bridge);
+
+    const records = Array.from({ length: 500 }, (_, index) => ({
+      class_name: `Test_Class_${index}`,
+      display_name: `Large Catalog Record ${index}`,
+      config_path: "CfgVehicles",
+      source_addon: "Test_Addon_With_Long_Name",
+      model_path: "\\test\\addons\\very\\long\\model\\path\\object.p3d",
+      parents: ["ThingX", "AllVehicles", "All"],
+      editor_category: "EdCat_Test",
+      editor_subcategory: "EdSubcat_Test",
+      simulation: "thingX",
+      author: "ArmaMCP test fixture"
+    }));
+
+    const response = await fetch(`${bridge.url}/bridge/result`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        schemaVersion: 1,
+        requestId: "req_large_catalog_chunk",
+        ok: true,
+        action: "catalog.scanChunk",
+        durationMs: 42,
+        result: {
+          scan_id: "test-scan",
+          config_path: "CfgVehicles",
+          chunk_index: 1,
+          chunk_size: records.length,
+          total_records: records.length,
+          start_index: 0,
+          is_last_chunk: true,
+          records
+        },
+        warnings: []
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect((await state.recentEvents(1))[0]).toMatchObject({
+      ok: true,
+      message: "Completed catalog.scanChunk"
+    });
   });
 
   it("lets stdio-only MCP state reuse an existing HTTP bridge", async () => {

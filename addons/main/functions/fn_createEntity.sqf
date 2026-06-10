@@ -21,6 +21,9 @@ if (_entityType isEqualTo "Marker") then {
     if (!isNil {_params get "alpha"} && {isNil {_attributes get "alpha"}}) then {_attributes set ["alpha", _params get "alpha"]};
     if (!isNil {_params get "size"} && {isNil {_attributes get "size"}}) then {_attributes set ["size", _params get "size"]};
     if (!isNil {_params get "angle"} && {isNil {_attributes get "angle"}}) then {_attributes set ["angle", _params get "angle"]};
+    if (_className isEqualTo "") then {
+        _className = _attributes getOrDefault ["markerType", "mil_dot"];
+    };
 };
 
 if (_entityType in ["Object", "Logic", "Module"] && {!isClass (configFile >> "CfgVehicles" >> _className)}) then {
@@ -43,10 +46,16 @@ if (_dryRun) exitWith {
 
 private _created = [];
 private _entity = objNull;
+private _creationType = [_entityType, "Logic"] select (_entityType isEqualTo "Module");
 
 collect3DENHistory {
-    _entity = create3DENEntity [_entityType, _className, _positionATL];
-    if (_entity isNotEqualTo objNull) then {
+    _entity = create3DENEntity [_creationType, _className, _positionATL];
+    private _createdOk = if (_entityType isEqualTo "Marker") then {
+        _entity isEqualType "" && {_entity isNotEqualTo ""}
+    } else {
+        _entity isEqualType objNull && {_entity isNotEqualTo objNull}
+    };
+    if (_createdOk) then {
         [_entity, _transform] call AMCP_fnc_applyTransform;
         if ((count _attributes) > 0) then {
             [_entity, _attributes] call AMCP_fnc_applyAttributes;
@@ -72,9 +81,11 @@ collect3DENHistory {
             ["className", _className],
             ["groupId", if (_entity isEqualType objNull && {!isNull (group _entity)}) then {[(group _entity), "Group"] call AMCP_fnc_registerEntity} else {""}]
         ];
-        if (_select) then {
+        if (_select && {_entity isEqualType objNull}) then {
             set3DENSelected [_entity];
         };
+    } else {
+        _warnings pushBack format ["Failed to create %1 %2", _entityType, _className];
     };
 };
 

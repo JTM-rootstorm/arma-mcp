@@ -119,15 +119,22 @@ switch (_operation) do {
         };
         private _ok = false;
         if (_sources isNotEqualTo [] && {!([_target] call _isMissingEntity)}) then {
-            _ok = add3DENConnection [_connectionType, _sources, _target];
+            add3DENConnection [_connectionType, _sources, _target];
+            _ok = true;
+        };
+        private _updated = [];
+        if (_ok) then {_updated = _entityIds};
+        private _warnings = [];
+        if (!_ok && {_sources isNotEqualTo []}) then {
+            _warnings pushBack format ["Failed to add %1 connection", _connectionType];
         };
         createHashMapFromArray [
             ["dryRun", false],
-            ["updated", if (_ok) then {_entityIds} else {[]}],
+            ["updated", _updated],
             ["targetEntityId", _targetEntityId],
             ["connectionType", _connectionType],
             ["missing", _missing],
-            ["warnings", if (_ok || {(count _sources) isEqualTo 0}) then {[]} else {[format ["Failed to add %1 connection", _connectionType]]}]
+            ["warnings", _warnings]
         ]
     };
     case "unsync": {
@@ -161,15 +168,22 @@ switch (_operation) do {
         };
         private _ok = false;
         if (_sources isNotEqualTo [] && {!([_target] call _isMissingEntity)}) then {
-            _ok = remove3DENConnection [_connectionType, _sources, _target];
+            remove3DENConnection [_connectionType, _sources, _target];
+            _ok = true;
+        };
+        private _updated = [];
+        if (_ok) then {_updated = _entityIds};
+        private _warnings = [];
+        if (!_ok && {_sources isNotEqualTo []}) then {
+            _warnings pushBack format ["Failed to remove %1 connection", _connectionType];
         };
         createHashMapFromArray [
             ["dryRun", false],
-            ["updated", if (_ok) then {_entityIds} else {[]}],
+            ["updated", _updated],
             ["targetEntityId", _targetEntityId],
             ["connectionType", _connectionType],
             ["missing", _missing],
-            ["warnings", if (_ok || {(count _sources) isEqualTo 0}) then {[]} else {[format ["Failed to remove %1 connection", _connectionType]]}]
+            ["warnings", _warnings]
         ]
     };
     default {

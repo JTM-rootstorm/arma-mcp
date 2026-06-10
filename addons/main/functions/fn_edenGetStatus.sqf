@@ -16,8 +16,8 @@ createHashMapFromArray [
         ["objects", count (_all param [0, []])],
         ["groups", count (_all param [1, []])],
         ["triggers", count (_all param [2, []])],
-        ["waypoints", count (_all param [3, []])],
-        ["logics", count (_all param [4, []])],
+        ["logics", count (_all param [3, []])],
+        ["waypoints", count (_all param [4, []])],
         ["markers", count (_all param [5, []])],
         ["layers", count (_all param [6, []])]
     ]]

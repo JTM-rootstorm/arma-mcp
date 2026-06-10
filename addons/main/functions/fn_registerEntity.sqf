@@ -21,6 +21,15 @@ if (_entity isEqualType grpNull) then {
 };
 
 if (_existing isEqualTo "") then {
+    private _prefix = format ["eden:%1:", toLower _entityType];
+    {
+        if ((_x find _prefix) isEqualTo 0 && {(_registry get _x) isEqualTo _entity}) exitWith {
+            _existing = _x;
+        };
+    } forEach (keys _registry);
+};
+
+if (_existing isEqualTo "") then {
     private _counter = (missionNamespace getVariable ["AMCP_entityCounter", 0]) + 1;
     missionNamespace setVariable ["AMCP_entityCounter", _counter];
     _existing = format ["eden:%1:%2", toLower _entityType, _counter];

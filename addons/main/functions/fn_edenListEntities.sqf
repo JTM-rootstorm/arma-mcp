@@ -15,7 +15,7 @@ private _radiusCenter = _radius getOrDefault ["centerATL", [0, 0, 0]];
 private _radiusMeters = _radius getOrDefault ["meters", 0];
 
 private _all = all3DENEntities;
-private _typeNames = ["Object", "Group", "Trigger", "Waypoint", "Logic", "Marker", "Layer"];
+private _typeNames = ["Object", "Group", "Trigger", "Logic", "Waypoint", "Marker"];
 private _entities = [];
 private _truncated = false;
 private _snapshotOptions = createHashMapFromArray [
@@ -32,7 +32,11 @@ for "_index" from 0 to (((count _all) min (count _typeNames)) - 1) do {
             if ((count _entities) >= _limit) then {
                 _truncated = true;
             } else {
-                private _snapshot = [_x, _entityType, _snapshotOptions] call AMCP_fnc_buildEntitySnapshot;
+                private _snapshotType = _entityType;
+                if (_entityType isEqualTo "Logic" && {_x isEqualType objNull} && {_x isKindOf "Module_F"}) then {
+                    _snapshotType = "Module";
+                };
+                private _snapshot = [_x, _snapshotType, _snapshotOptions] call AMCP_fnc_buildEntitySnapshot;
                 private _className = toLower (_snapshot getOrDefault ["className", ""]);
                 private _variableName = toLower (_snapshot getOrDefault ["variableName", ""]);
                 private _passesClass = _classFilter isEqualTo "" || {(_className find _classFilter) >= 0};
