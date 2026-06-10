@@ -85,6 +85,9 @@ export function generateSmallOutpost(input: {
     object("supply", "Land_Cargo20_military_green_F", [-7, -4, 0], threatDir + 90, layer),
     marker("outpost_marker", "mil_objective", [0, 0, 0], input.objective ?? "Outpost", layer)
   ];
+  if (objectiveSuggestsTerminal(input.objective)) {
+    operations.push(object("objective_terminal", "Land_DataTerminal_01_F", [2.5, 2.5, 0], threatDir, layer));
+  }
   for (let index = 0; index < 8; index += 1) {
     const angle = (index / 8) * 360;
     const radians = (angle * Math.PI) / 180;
@@ -250,6 +253,9 @@ function applyCatalogChoices(
 
 export function generatorRoleForClientRef(clientRef: string): string {
   const normalized = clientRef.toLowerCase();
+  if (normalized.includes("terminal") || normalized.includes("console") || normalized.includes("objective")) {
+    return "objective_terminal";
+  }
   if (normalized.includes("light")) {
     return "generator_light";
   }
@@ -263,6 +269,10 @@ export function generatorRoleForClientRef(clientRef: string): string {
     return "generator_static_weapon";
   }
   return "generator_fortification";
+}
+
+function objectiveSuggestsTerminal(objective: string | undefined): boolean {
+  return Boolean(objective?.toLowerCase().match(/\b(console|terminal|uplink|download|upload|hack|data|intel)\b/));
 }
 
 function rotateOffset(base: [number, number, number], dir: number, offset: [number, number, number]): [number, number, number] {

@@ -80,6 +80,7 @@ export const MCP_DISCOVERY_FALLBACK_TOOL_NAMES = [
   "arma_catalog_status",
   "arma_composition_plan",
   "arma_eden_list_placed",
+  "arma_visual_inspectClass",
   "arma_visual_inspect_class",
   "arma.eden.inspectClass",
   "arma.eden.planComposition",
@@ -294,6 +295,12 @@ const visualInspectClassToolSchema = z.object({
   height: z.number().min(-10).max(100).default(2.2),
   fov: z.number().positive().max(2).default(0.7),
   settleSeconds: z.number().nonnegative().max(5).default(0.25),
+  timeoutMs: z.number().int().positive().max(120_000).default(60_000)
+});
+const managedVisualInspectClassToolSchema = z.object({
+  className: z.string().trim().min(1).max(200),
+  angles: z.array(z.string().trim().min(1).max(40)).max(16).optional(),
+  force: z.boolean().default(false),
   timeoutMs: z.number().int().positive().max(120_000).default(60_000)
 });
 const cameraPreviewSceneToolSchema = z.object({
@@ -2136,7 +2143,17 @@ function registerPriorityEdenWorkflowTools(server: McpServer, state: ArmaMcpStat
     {
       title: "Inspect Class Visually",
       description: "Discovery-friendly alias for the high-level visual class inspection workflow.",
-      inputSchema: visualInspectClassToolSchema.shape
+      inputSchema: managedVisualInspectClassToolSchema.shape
+    },
+    async (input) => jsonToolResult(await inspectClassVisually(state, input))
+  );
+
+  server.registerTool(
+    "arma_visual_inspectClass",
+    {
+      title: "Inspect Class Visually",
+      description: "Managed-friendly camel alias for the high-level visual class inspection workflow.",
+      inputSchema: managedVisualInspectClassToolSchema.shape
     },
     async (input) => jsonToolResult(await inspectClassVisually(state, input))
   );
@@ -2146,7 +2163,7 @@ function registerPriorityEdenWorkflowTools(server: McpServer, state: ArmaMcpStat
     {
       title: "Inspect Class Visually",
       description: "High-level visual class inspection workflow, registered early for managed MCP discovery.",
-      inputSchema: visualInspectClassToolSchema.shape
+      inputSchema: managedVisualInspectClassToolSchema.shape
     },
     async (input) => jsonToolResult(await inspectClassVisually(state, input))
   );
@@ -2166,7 +2183,7 @@ function registerPriorityEdenWorkflowTools(server: McpServer, state: ArmaMcpStat
     {
       title: "Inspect Eden Class",
       description: "Direct Eden-facing visual class inspection alias, registered early for managed MCP discovery.",
-      inputSchema: visualInspectClassToolSchema.shape
+      inputSchema: managedVisualInspectClassToolSchema.shape
     },
     async (input) => jsonToolResult(await inspectClassVisually(state, input))
   );
@@ -3642,7 +3659,14 @@ async function withGeneratorCatalogChoices<T extends Record<string, unknown>>(in
           });
         }
       }
-      for (const role of ["generator_fortification", "generator_light", "generator_supply", "generator_structure", "generator_static_weapon"]) {
+      for (const role of [
+        "generator_fortification",
+        "generator_light",
+        "generator_supply",
+        "generator_structure",
+        "generator_static_weapon",
+        "objective_terminal"
+      ]) {
         if (catalogChoices.some((choice) => choice.role === role && !choice.clientRef)) {
           continue;
         }
@@ -3771,6 +3795,7 @@ async function callManagedDiscoveryFallbackTool(
       const parsed = catalogRoleToolSchema.parse(input);
       return withCatalogDb((catalogDb) => ({ results: recommendCatalogRole(catalogDb, parsed.role, parsed.limit) }));
     }
+    case "arma_visual_inspectClass":
     case "arma_visual_inspect_class":
     case "arma.eden.inspectClass":
       return inspectClassVisually(state, input);

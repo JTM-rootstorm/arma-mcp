@@ -98,7 +98,7 @@ The direct bridge action manifest lives in `sidecar/src/actionManifest.ts`. Deli
 - `arma.eden.generate_cover_line`
 - `arma.eden.generate_prop_wall`
 
-Generator tools return dry-run `arma.eden.batch` plans. Their `catalogPreferences` input can enable local catalog-backed class choices, role overrides, or pinned class overrides; missing catalog data falls back to vanilla classnames with warnings.
+Generator tools return dry-run `arma.eden.batch` plans. Their `catalogPreferences` input can enable local catalog-backed class choices, role overrides, or pinned class overrides; missing catalog data falls back to vanilla classnames with warnings. `arma.eden.generate_small_outpost` adds an objective terminal object when the objective text asks for a console, terminal, uplink, data, intel, or hack target, allowing the catalog role `objective_terminal` to choose richer console assets.
 
 ## Catalog, Assets, Terrain, And Visuals
 
@@ -151,3 +151,11 @@ Generator tools return dry-run `arma.eden.batch` plans. Their `catalogPreference
 - `arma_generate_checkpoint_plan`
 - `arma_queue_apply_plan`
 - `arma_get_bridge_events`
+- `arma_visual_inspect_class`
+- `arma_visual_inspectClass`
+- `arma_composition_plan`
+- `arma_catalog_status`
+- `arma_catalog_search`
+- `arma_catalog_get_class`
+- `arma_catalog_find_by_role`
+- `arma_eden_list_placed`

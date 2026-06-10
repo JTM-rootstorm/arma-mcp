@@ -1261,6 +1261,7 @@ describe("managed MCP discovery fallback", () => {
       "arma_catalog_status",
       "arma_composition_plan",
       "arma_eden_list_placed",
+      "arma_visual_inspectClass",
       "arma_visual_inspect_class",
       "arma.eden.inspectClass",
       "arma.eden.planComposition",
@@ -1419,6 +1420,17 @@ describe("synthetic Eden action inventory", () => {
     expect(priorityIndex).toBeGreaterThanOrEqual(0);
     expect(visualIndex).toBeGreaterThan(priorityIndex);
     expect(visualIndex).toBeLessThan(cameraBlockIndex);
+  });
+
+  it("keeps visual inspection aliases managed-discovery friendly", () => {
+    const mcpServer = sqf("sidecar/src/mcpServer.ts");
+    const priorityIndex = mcpServer.indexOf("function registerPriorityEdenWorkflowTools");
+    const priorityBody = mcpServer.slice(priorityIndex, mcpServer.indexOf("function registerVisualAndCameraTools"));
+
+    expect(priorityBody).toContain('"arma_visual_inspect_class"');
+    expect(priorityBody).toContain('"arma_visual_inspectClass"');
+    expect(priorityBody).toContain('"arma.visual.inspectClass"');
+    expect(priorityBody).toContain("managedVisualInspectClassToolSchema.shape");
   });
 
   it("keeps fallback-routed direct tools represented in the manifest", () => {
@@ -2126,6 +2138,22 @@ describe("procedural generators", () => {
     expect(generated.plan.operations.some((operation) => "catalogRole" in operation || "reason" in operation)).toBe(false);
   });
 
+  it("adds and catalog-backs objective terminals when small outpost text asks for a console", () => {
+    const generated = generateSmallOutpost({
+      anchor: { positionATL: [0, 0, 0], dir: 0 },
+      objective: "CIS console objective outpost",
+      catalogChoices: [{ role: "objective_terminal", className: "3AS_CIS_Console_Prop", reason: "synthetic catalog" }]
+    });
+
+    expect(generatorRoleForClientRef("objective_terminal")).toBe("objective_terminal");
+    expect(generated.plan.operations.find((operation) => operation.clientRef === "objective_terminal")).toMatchObject({
+      className: "3AS_CIS_Console_Prop"
+    });
+    expect(generated.catalog?.applied).toEqual(
+      expect.arrayContaining([expect.objectContaining({ role: "objective_terminal", className: "3AS_CIS_Console_Prop" })])
+    );
+  });
+
   it("reports fallback generator roles when catalog choices are unavailable", () => {
     const generated = generateSmallOutpost({ anchor: { positionATL: [0, 0, 0], dir: 0 } });
 
@@ -2133,6 +2161,9 @@ describe("procedural generators", () => {
     expect(generated.catalog?.missingRoles).toContain("generator_structure");
     expect(generatorRoleForClientRef("landing_light_1")).toBe("generator_light");
     expect(generatorRoleForClientRef("ammo_cache")).toBe("generator_supply");
+    expect(generateSmallOutpost({ objective: "Hold the data uplink" }).plan.operations.find((operation) => operation.clientRef === "objective_terminal")?.className).toBe(
+      "Land_DataTerminal_01_F"
+    );
   });
 });
 

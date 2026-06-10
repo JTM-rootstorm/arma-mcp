@@ -91,7 +91,9 @@ SQF or shell execution.
 
 For managed discovery contexts that surface simpler underscore names more
 reliably than dotted names, `arma_visual_inspect_class` aliases
-`arma.visual.inspectClass`, and `arma_composition_plan` aliases
+`arma.visual.inspectClass`. `arma_visual_inspectClass` is also registered with
+a small managed-friendly input schema for registries that prefer the camel-case
+normalization of dotted tool names. `arma_composition_plan` aliases
 `arma.composition.plan`.
 The sidecar also exposes discovery-friendly aliases for common PLAN-002 reads:
 `arma_catalog_status`, `arma_catalog_search`, `arma_catalog_get_class`,
