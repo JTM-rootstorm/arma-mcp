@@ -347,7 +347,7 @@ function isRepairSearchQuery(query: string): boolean {
 
 function isObjectAssetQuery(query: string | undefined): boolean {
   const normalized = query?.trim().toLowerCase().replace(/[\s-]+/g, "_");
-  return Boolean(normalized && ["console", "terminal", "medical", "medic", "repair", "turret"].includes(normalized));
+  return Boolean(normalized && ["console", "terminal", "objective_terminal", "command_terminal", "task", "module_task", "medical", "medic", "repair", "turret"].includes(normalized));
 }
 
 export function getCatalogSearchDiagnostics(

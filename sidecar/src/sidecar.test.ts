@@ -598,6 +598,147 @@ describe("catalog database", () => {
     expect(cruiser?.tags).not.toContain("module_task");
   });
 
+  it("ranks real task modules above Modular Taskforce Cruiser structures", () => {
+    const catalog = openCatalogDb(tempCatalogPath());
+    try {
+      ensureCatalogSchema(catalog);
+      writeScanManifest(catalog, {
+        scanId: "scan_task_module_rank",
+        loadedModsHash: "mods",
+        loadedAddonsHash: "addons",
+        status: "complete"
+      });
+      for (const item of [
+        {
+          className: "MTCcombat",
+          displayName: "Modular Taskforce Cruiser [Combat Module]",
+          kind: "structure",
+          subkind: null,
+          simulation: "house",
+          editorCategory: "basedship",
+          editorSubcategory: "EdSubCat_HeavyCruisers",
+          modelPath: "victoryIISD\\MTCcombat.p3d",
+          tags: ["structure", "module"]
+        },
+        {
+          className: "ModuleTaskCreate_F",
+          displayName: "Create Task",
+          kind: "module",
+          subkind: "task",
+          simulation: "logic",
+          editorCategory: "EdCat_Modules",
+          editorSubcategory: "EdSubcat_Intel",
+          modelPath: "\\a3\\modules_f\\taskcreate.p3d",
+          tags: ["module", "module_task"]
+        },
+        {
+          className: "ModuleTaskSetState_F",
+          displayName: "Set Task State",
+          kind: "module",
+          subkind: "task",
+          simulation: "logic",
+          editorCategory: "EdCat_Modules",
+          editorSubcategory: "EdSubcat_Intel",
+          modelPath: "\\a3\\modules_f\\taskstate.p3d",
+          tags: ["module", "module_task"]
+        }
+      ]) {
+        upsertCatalogClass(catalog, {
+          className: item.className,
+          latestScanId: "scan_task_module_rank",
+          configPath: "CfgVehicles",
+          displayName: item.displayName,
+          kind: item.kind,
+          subkind: item.subkind,
+          simulation: item.simulation,
+          editorCategory: item.editorCategory,
+          editorSubcategory: item.editorSubcategory,
+          modelPath: item.modelPath,
+          scope: 2,
+          tags: item.tags
+        });
+        upsertClassTags(
+          catalog,
+          item.className,
+          item.tags.map((tag) => ({ tag, confidence: 0.9 }))
+        );
+        updateFtsIndex(catalog, item.className);
+      }
+
+      expect(recommendCatalogRole(catalog, "module_task", 3).map((item) => item.class_name)).toEqual([
+        "ModuleTaskCreate_F",
+        "ModuleTaskSetState_F"
+      ]);
+    } finally {
+      closeCatalogDb(catalog);
+    }
+  });
+
+  it("prefers rich CIS console hits over vanilla terminals for objective terminals", () => {
+    const catalog = openCatalogDb(tempCatalogPath());
+    try {
+      ensureCatalogSchema(catalog);
+      writeScanManifest(catalog, {
+        scanId: "scan_console_rank",
+        loadedModsHash: "mods",
+        loadedAddonsHash: "addons",
+        status: "complete"
+      });
+      for (const item of [
+        {
+          className: "Land_DataTerminal_01_F",
+          displayName: "Data Terminal",
+          kind: "prop",
+          subkind: "terminal",
+          modelPath: "\\a3\\structures_f\\items\\electronics\\dataterminal_01_f.p3d",
+          tags: ["terminal", "objective_terminal"]
+        },
+        {
+          className: "3AS_CIS_Console_Wall_F",
+          displayName: "CIS Console Wall",
+          kind: "prop",
+          subkind: "console",
+          modelPath: "3as\\3as_structures\\cis_console_wall.p3d",
+          tags: ["cis", "console", "terminal", "command_terminal", "objective_terminal"]
+        },
+        {
+          className: "3AS_CIS_Command_Console_F",
+          displayName: "CIS Command Console",
+          kind: "prop",
+          subkind: "console",
+          modelPath: "3as\\3as_structures\\cis_command_console.p3d",
+          tags: ["cis", "console", "terminal", "command_terminal", "objective_terminal"]
+        }
+      ]) {
+        upsertCatalogClass(catalog, {
+          className: item.className,
+          latestScanId: "scan_console_rank",
+          configPath: "CfgVehicles",
+          displayName: item.displayName,
+          kind: item.kind,
+          subkind: item.subkind,
+          modelPath: item.modelPath,
+          scope: 2,
+          tags: item.tags
+        });
+        upsertClassTags(
+          catalog,
+          item.className,
+          item.tags.map((tag) => ({ tag, confidence: 0.9 }))
+        );
+        updateFtsIndex(catalog, item.className);
+      }
+
+      expect(recommendCatalogRole(catalog, "objective_terminal", 3).map((item) => item.class_name)).toEqual([
+        "3AS_CIS_Command_Console_F",
+        "3AS_CIS_Console_Wall_F",
+        "Land_DataTerminal_01_F"
+      ]);
+    } finally {
+      closeCatalogDb(catalog);
+    }
+  });
+
   it("keeps package rows out of default cached asset search results", () => {
     const catalog = openCatalogDb(tempCatalogPath());
     try {
@@ -1267,6 +1408,17 @@ describe("synthetic Eden action inventory", () => {
     expect(registrationIndex).toBeGreaterThanOrEqual(0);
     expect(registrationBody).toContain("findSimilarCatalogClasses(catalogDb, parsed.className, parsed.limit)");
     expect(registrationBody).not.toContain("searchCatalogClasses(catalogDb, { kind:");
+  });
+
+  it("registers canonical visual inspection before managed discovery-sensitive tool blocks", () => {
+    const mcpServer = sqf("sidecar/src/mcpServer.ts");
+    const priorityIndex = mcpServer.indexOf("function registerPriorityEdenWorkflowTools");
+    const visualIndex = mcpServer.indexOf('server.registerTool(\n    "arma.visual.inspectClass"', priorityIndex);
+    const cameraBlockIndex = mcpServer.indexOf("function registerVisualAndCameraTools");
+
+    expect(priorityIndex).toBeGreaterThanOrEqual(0);
+    expect(visualIndex).toBeGreaterThan(priorityIndex);
+    expect(visualIndex).toBeLessThan(cameraBlockIndex);
   });
 
   it("keeps fallback-routed direct tools represented in the manifest", () => {

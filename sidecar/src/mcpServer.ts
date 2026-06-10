@@ -2142,6 +2142,16 @@ function registerPriorityEdenWorkflowTools(server: McpServer, state: ArmaMcpStat
   );
 
   server.registerTool(
+    "arma.visual.inspectClass",
+    {
+      title: "Inspect Class Visually",
+      description: "High-level visual class inspection workflow, registered early for managed MCP discovery.",
+      inputSchema: visualInspectClassToolSchema.shape
+    },
+    async (input) => jsonToolResult(await inspectClassVisually(state, input))
+  );
+
+  server.registerTool(
     "arma_composition_plan",
     {
       title: "Plan Composition",
@@ -2269,48 +2279,6 @@ function registerVisualAndCameraTools(server: McpServer, state: ArmaMcpState): v
     async () => {
       const result = await dispatchCatalogAction(state, "camera.destroyPreviewScene", {}, 30_000);
       return jsonToolResult(result.result);
-    }
-  );
-
-  server.registerTool(
-    "arma.visual.inspectClass",
-    {
-      title: "Inspect Class Visually",
-      description: "Create visual inspection bookkeeping and return a clear non-fatal screenshot backend error.",
-      inputSchema: visualInspectClassToolSchema.shape
-    },
-    async (input) => {
-      const parsed = visualInspectClassToolSchema.parse(input);
-      return withCatalogDb((catalogDb) => {
-        const catalogClass = getCatalogClass(catalogDb, parsed.className);
-        if (!catalogClass) {
-          throw new Error(`Class ${parsed.className} is not present in the local catalog cache`);
-        }
-        if (!parsed.force && !isSafeToMeasure(catalogClass)) {
-          throw new Error(`Class ${parsed.className} is not safe for visual inspection without force=true`);
-        }
-        const screenshotDir = screenshotCacheDir(parsed.className);
-        mkdirSync(screenshotDir, { recursive: true });
-        const runId = createVisualInspectionRun(catalogDb, {
-          className: parsed.className,
-          status: "running",
-          angles: parsed.angles,
-          screenshotDir,
-          resolution: parsed.resolution
-        });
-        return captureClassAngles(state, { ...parsed, runId: String(runId) }, runId).then((result) => {
-          const screenshots = storeCapturedScreenshots(catalogDb, parsed.className, runId, asRecord(result.result));
-          const failed = screenshots.filter((shot) => shot.captured === false);
-          finishVisualInspectionRun(catalogDb, runId, failed.length > 0 ? "partial" : "complete", failed.length > 0 ? "one_or_more_screenshots_failed" : null);
-          return jsonToolResult({
-            ...asRecord(result.result),
-            ok: failed.length === 0,
-            inspectionRunId: runId,
-            screenshotDir,
-            screenshots
-          });
-        });
-      });
     }
   );
 
@@ -3032,7 +3000,7 @@ export function recommendCatalogRole(catalogDb: ReturnType<typeof openCatalogDb>
 
 function shouldUseRoleQueryRanking(role: string): boolean {
   const normalized = role.trim().toLowerCase().replace(/[\s-]+/g, "_");
-  return ["medical", "medic", "repair", "turret"].includes(normalized);
+  return ["medical", "medic", "repair", "turret", "task", "module_task", "console", "terminal", "objective_terminal", "command_terminal"].includes(normalized);
 }
 
 function roleToTags(role: string): { primary: string[]; broad: string[] } {
@@ -3040,6 +3008,8 @@ function roleToTags(role: string): { primary: string[]; broad: string[] } {
   const aliases: Record<string, { primary: string[]; broad?: string[] }> = {
     console: { primary: ["console", "command_terminal", "objective_terminal", "terminal"] },
     terminal: { primary: ["terminal", "command_terminal", "objective_terminal"] },
+    objective_terminal: { primary: ["objective_terminal", "command_terminal", "console", "terminal"], broad: ["prop"] },
+    command_terminal: { primary: ["command_terminal", "objective_terminal", "console", "terminal"], broad: ["prop"] },
     bunker: { primary: ["bunker"], broad: ["fortification"] },
     sandbag: { primary: ["cover_low", "wall_segment"], broad: ["fortification"] },
     medical: { primary: ["medical", "medical_crate"] },
@@ -3057,6 +3027,7 @@ function roleToTags(role: string): { primary: string[]; broad: string[] } {
     generator_structure: { primary: ["structure", "bunker"] },
     generator_static_weapon: { primary: ["static_weapon", "turret"] },
     task: { primary: ["module_task"], broad: ["module"] },
+    module_task: { primary: ["module_task"], broad: ["module"] },
     respawn: { primary: ["module_respawn"], broad: ["module"] },
     zeus: { primary: ["module_zeus"], broad: ["module"] }
   };
@@ -3077,6 +3048,15 @@ function roleRecommendationQueries(role: string): string[] {
   }
   if (normalized === "generator_structure") {
     return ["cargo tower", "patrol tower", "bunker", "guard tower"];
+  }
+  if (normalized === "task" || normalized === "module_task") {
+    return ["task module", "module task", "objective module"];
+  }
+  if (normalized === "objective_terminal") {
+    return ["cis console", "command console", "data terminal", "console", "terminal"];
+  }
+  if (normalized === "console" || normalized === "terminal" || normalized === "command_terminal") {
+    return ["cis console", "command console", "data terminal"];
   }
   return [];
 }
@@ -3204,6 +3184,40 @@ function roleSpecificScore(role: string, item: Record<string, unknown>): number 
       score -= 1.2;
     }
   }
+  if (normalized === "task" || normalized === "module_task") {
+    if (kind === "module") {
+      score += 1.2;
+    }
+    if (subkind === "task" || tags.includes("module_task")) {
+      score += 1.0;
+    }
+    if (identityTokens.match(/\b(task|objective)\b/) && text.match(/\b(module|logic)\b/)) {
+      score += 0.8;
+    }
+    if (identityTokens.match(/\b(modular taskforce|taskforce|cruiser|ship|frigate|destroyer|carrier)\b/) || ["structure", "vehicle"].includes(kind)) {
+      score -= 2.5;
+    }
+  }
+  if (["console", "terminal", "objective_terminal", "command_terminal"].includes(normalized)) {
+    if (["console", "terminal"].includes(subkind)) {
+      score += 0.8;
+    }
+    if (tags.some((tag) => ["console", "terminal", "objective_terminal", "command_terminal"].includes(tag))) {
+      score += 0.7;
+    }
+    if (identityTokens.match(/\b(cis|separatist|droid)\b/) && identityTokens.match(/\b(console|terminal)\b/)) {
+      score += 1.2;
+    }
+    if (identityTokens.match(/\b(command|control|operations?)\b/) && identityTokens.match(/\b(console|terminal)\b/)) {
+      score += 0.5;
+    }
+    if (identityTokens.match(/\b(data terminal|land dataterminal 01 f|land data terminal)\b/)) {
+      score -= normalized === "objective_terminal" ? 0.5 : 0.2;
+    }
+    if (text.match(/\b(wreck|decal|helper|weapon|magazine|item)\b/)) {
+      score -= 1.0;
+    }
+  }
   return score;
 }
 
@@ -3224,6 +3238,12 @@ function isUnsuitableRoleCandidate(role: string, item: Record<string, unknown>):
   }
   if (normalized === "generator_structure") {
     return Boolean(identityText.match(/\b(building position|helper|helpers|vrobjects?|editor helper|item|bipod|grip|optic|muzzle|attachment|weapon|doorframe|door frame|mesh|decal)\b/));
+  }
+  if (normalized === "task" || normalized === "module_task") {
+    const kind = String(item.kind ?? "").toLowerCase();
+    const subkind = String(item.subkind ?? "").toLowerCase();
+    const tags = Array.isArray(item.tags) ? item.tags.map((tag) => String(tag).toLowerCase()) : [];
+    return kind !== "module" && subkind !== "task" && !tags.includes("module_task");
   }
   return false;
 }
