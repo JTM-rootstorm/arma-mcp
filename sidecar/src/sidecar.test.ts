@@ -289,12 +289,12 @@ describe("catalog database", () => {
       );
       chmodSync(tool, 0o755);
       process.env.ARMA_MCP_SCREENSHOT_FALLBACK_TOOL = tool;
-      process.env.ARMA_MCP_SCREENSHOT_FALLBACK_MODE = "activewindow";
+      delete process.env.ARMA_MCP_SCREENSHOT_FALLBACK_MODE;
       process.env.ARMA_MCP_SCREENSHOT_FALLBACK = "auto";
 
       expect(captureLinuxScreenshotFallback(target)).toMatchObject({
         captured: true,
-        method: "spectacle:activewindow"
+        method: "spectacle:current"
       });
       expect(readFileSync(target, "utf8")).toBe("fake-png");
     } finally {
@@ -1396,7 +1396,9 @@ describe("synthetic Eden action inventory", () => {
       expect(source).toContain("private _groups = [];");
       expect(source).toContain("_entity isEqualType grpNull");
       expect(source).toContain("_entities append (units _entity);");
-      expect(source).toContain("deleteGroup _x;");
+      expect(source).toContain("_delete3DEN append _groups;");
+      expect(source).toContain("delete3DENEntities _delete3DEN;");
+      expect(source).toContain("if (!isNull _x) then {deleteGroup _x};");
     }
   });
 
@@ -1596,6 +1598,7 @@ describe("synthetic Eden action inventory", () => {
     const capture = sqf("addons/main/functions/fn_captureComposition.sqf");
     const apply = sqf("addons/main/functions/fn_applyComposition.sqf");
     const createEntity = sqf("addons/main/functions/fn_createEntity.sqf");
+    const mcpServer = readFileSync("src/mcpServer.ts", "utf8");
 
     for (const field of ["groupLinks", "waypointLinks", "schemaVersion\", 2"]) {
       expect(capture).toContain(field);
@@ -1609,6 +1612,7 @@ describe("synthetic Eden action inventory", () => {
     expect(apply).toContain('["sync"');
     expect(apply).toContain("wouldCreateWaypoints");
     expect(apply).toContain("wouldAssignGroups");
+    expect(mcpServer).toContain("schemaVersion: z.union([z.literal(1), z.literal(2)])");
   });
 
   it("exports batch and generator composition plans as SQF and Eden instructions", () => {
@@ -1848,6 +1852,25 @@ describe("write policy", () => {
         attributes: { arbitraryCodeField: "nope" }
       })
     ).toThrow(/not allowlisted/);
+  });
+
+  it("allows scoped group and module wrapper attributes", () => {
+    expect(
+      enforceToolPolicy({
+        action: "eden.set_group_attributes",
+        dryRun: false,
+        confirmation: { confirmed: true, reason: "test" },
+        attributes: { callsign: "AMCP REG" }
+      })
+    ).toMatchObject({ warnings: [] });
+    expect(
+      enforceToolPolicy({
+        action: "eden.set_entity_attributes",
+        dryRun: false,
+        confirmation: { confirmed: true, reason: "test" },
+        attributes: { Owner: "#adminLogged" }
+      })
+    ).toMatchObject({ warnings: [] });
   });
 
   it("requires confirmation for risky init writes", () => {

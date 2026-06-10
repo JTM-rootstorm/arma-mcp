@@ -814,7 +814,7 @@ const captureCompositionToolSchema = z.object({
 const applyCompositionToolSchema = writeBaseSchema.extend({
   composition: z
     .object({
-      schemaVersion: z.literal(1),
+      schemaVersion: z.union([z.literal(1), z.literal(2)]),
       name: z.string().min(1).max(120),
       entities: z.array(z.record(z.string(), z.unknown())).max(250),
       connections: z.array(z.record(z.string(), z.unknown())).optional()

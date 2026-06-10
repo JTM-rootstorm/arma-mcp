@@ -68,7 +68,7 @@ export function captureLinuxScreenshotFallback(targetPath: string): LinuxScreens
     return { captured: false, warning: "linux_screenshot_fallback_tool_not_found" };
   }
 
-  const mode = process.env.ARMA_MCP_SCREENSHOT_FALLBACK_MODE ?? "activewindow";
+  const mode = process.env.ARMA_MCP_SCREENSHOT_FALLBACK_MODE ?? "current";
   const args = fallbackArgs(tool, mode, targetPath);
   if (!args) {
     return { captured: false, warning: `linux_screenshot_fallback_mode_unsupported:${mode}` };
@@ -78,11 +78,14 @@ export function captureLinuxScreenshotFallback(targetPath: string): LinuxScreens
   rmSync(targetPath, { force: true });
 
   const result = spawnSync(tool, args, {
-    env: process.env,
+    env: screenshotFallbackEnv(process.env),
     encoding: "utf8",
     timeout: screenshotFallbackTimeoutMs(),
     windowsHide: true
   });
+  if (existsSync(targetPath) && fileSize(targetPath) > 0) {
+    return { captured: true, method: fallbackMethod(tool, mode) };
+  }
   if (result.error) {
     return { captured: false, method: fallbackMethod(tool, mode), warning: `linux_screenshot_fallback_error:${truncate(result.error.message)}` };
   }
@@ -111,7 +114,7 @@ export function getScreenshotMirroringStatus(): ScreenshotMirroringStatus {
     linuxFallback: {
       enabled: !["0", "false", "off", "none"].includes((process.env.ARMA_MCP_SCREENSHOT_FALLBACK ?? "auto").toLowerCase()),
       tool,
-      mode: process.env.ARMA_MCP_SCREENSHOT_FALLBACK_MODE ?? "activewindow"
+      mode: process.env.ARMA_MCP_SCREENSHOT_FALLBACK_MODE ?? "current"
     }
   };
 }
@@ -263,6 +266,28 @@ function fallbackArgs(toolPath: string, mode: string, targetPath: string): strin
     return [targetPath];
   }
   return null;
+}
+
+function screenshotFallbackEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const next = { ...env };
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  const runtimeDir = next.XDG_RUNTIME_DIR ?? (uid !== undefined ? `/run/user/${uid}` : undefined);
+  if (runtimeDir) {
+    next.XDG_RUNTIME_DIR ??= runtimeDir;
+    if (!next.DBUS_SESSION_BUS_ADDRESS && existsSync(join(runtimeDir, "bus"))) {
+      next.DBUS_SESSION_BUS_ADDRESS = `unix:path=${join(runtimeDir, "bus")}`;
+    }
+    if (!next.WAYLAND_DISPLAY && existsSync(join(runtimeDir, "wayland-0"))) {
+      next.WAYLAND_DISPLAY = "wayland-0";
+    }
+  }
+  if (!next.DISPLAY) {
+    next.DISPLAY = ":0";
+  }
+  if (!next.QT_QPA_PLATFORM && next.WAYLAND_DISPLAY) {
+    next.QT_QPA_PLATFORM = "wayland";
+  }
+  return next;
 }
 
 function fallbackMethod(toolPath: string, mode: string): string {

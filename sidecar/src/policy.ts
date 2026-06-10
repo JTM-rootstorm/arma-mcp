@@ -30,7 +30,12 @@ const attributeAllowlist = new Set([
   "speedMode",
   "formation",
   "timeout",
-  "completionRadius"
+  "completionRadius",
+  "callsign",
+  "Owner",
+  "ModuleDescription",
+  "Forced",
+  "Addons"
 ]);
 
 const sensitiveAttributeNames = new Set(["init", "condition", "onActivation", "onDeactivation"]);

@@ -121,11 +121,13 @@ collect3DENHistory {
                         _deleted pushBack _x;
                     };
                 } forEach _ids;
-                if (_entities isNotEqualTo []) then {
-                    delete3DENEntities _entities;
+                private _delete3DEN = +_entities;
+                _delete3DEN append _groups;
+                if (_delete3DEN isNotEqualTo []) then {
+                    delete3DENEntities _delete3DEN;
                 };
                 {
-                    deleteGroup _x;
+                    if (!isNull _x) then {deleteGroup _x};
                 } forEach _groups;
             };
             case "select_entities": {
