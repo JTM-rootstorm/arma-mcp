@@ -806,6 +806,30 @@ describe("catalog database", () => {
           modelPath: "\\a3\\structures_f\\cargo_patrol.p3d"
         },
         {
+          className: "Land_GuardTower_01_F",
+          displayName: "Guard Tower (Big)",
+          kind: "structure",
+          tags: ["structure", "watchtower"],
+          editorSubcategory: "EdSubcat_Military",
+          modelPath: "\\a3\\structures_f\\guard_tower.p3d"
+        },
+        {
+          className: "CBA_BuildingPos",
+          displayName: "AI Building Position",
+          kind: "structure",
+          tags: ["structure"],
+          editorCategory: "EdCat_VRObjects",
+          editorSubcategory: "EdSubcat_Helpers",
+          modelPath: "\\x\\cba\\addons\\ai\\BuildingPos.p3d"
+        },
+        {
+          className: "Item_bipod_GripPod_01_G",
+          displayName: "Grip Pod Bipod",
+          kind: "structure",
+          tags: ["structure"],
+          modelPath: "\\a3\\weapons_f\\acc\\bipod.p3d"
+        },
+        {
           className: "OPTRE_PlaceableMagazine_M41_M19SmokeB",
           displayName: "Placeable Magazine",
           kind: "prop",
@@ -828,6 +852,13 @@ describe("catalog database", () => {
           modelPath: "\\3as\\console_wall.p3d"
         },
         {
+          className: "Land_at_at_station_bunker_doorframe_01_mesh",
+          displayName: "Bunker Doorframe Mesh",
+          kind: "fortification",
+          tags: ["fortification", "wall_segment"],
+          modelPath: "\\3as\\doorframe_mesh.p3d"
+        },
+        {
           className: "Land_HBarrier_3_F",
           displayName: "H-Barrier",
           kind: "fortification",
@@ -842,6 +873,8 @@ describe("catalog database", () => {
           displayName: item.displayName,
           kind: item.kind,
           subkind: item.subkind,
+          editorCategory: item.editorCategory,
+          editorSubcategory: item.editorSubcategory,
           modelPath: item.modelPath,
           scope: 2,
           tags: item.tags
@@ -855,14 +888,17 @@ describe("catalog database", () => {
       }
 
       expect(recommendCatalogRole(catalog, "generator_structure", 3)[0]).toMatchObject({ class_name: "Land_Cargo_Patrol_V1_F" });
+      expect(recommendCatalogRole(catalog, "generator_structure", 5).map((item) => item.class_name)).not.toContain("CBA_BuildingPos");
+      expect(recommendCatalogRole(catalog, "generator_structure", 5).map((item) => item.class_name)).not.toContain("Item_bipod_GripPod_01_G");
       expect(recommendCatalogRole(catalog, "generator_supply", 3)[0]).toMatchObject({ class_name: "Box_NATO_AmmoVeh_F" });
       expect(recommendCatalogRole(catalog, "generator_fortification", 3)[0]).toMatchObject({ class_name: "Land_HBarrier_3_F" });
+      expect(recommendCatalogRole(catalog, "generator_fortification", 5).map((item) => item.class_name)).not.toContain("Land_at_at_station_bunker_doorframe_01_mesh");
     } finally {
       closeCatalogDb(catalog);
     }
   });
 
-  it("keeps medical-bed similarity on medical furniture instead of terminals", () => {
+  it("keeps medical bed and stretcher similarity on medical furniture instead of terminals or cases", () => {
     const catalog = openCatalogDb(tempCatalogPath());
     try {
       ensureCatalogSchema(catalog);
@@ -875,6 +911,9 @@ describe("catalog database", () => {
       for (const item of [
         { className: "3AS_Medical_Bed", displayName: "Medical Bed", tags: ["prop", "medical"], subkind: "bed" },
         { className: "3AS_Medical_Scanner", displayName: "Medical Scanner", tags: ["prop", "medical"], subkind: "scanner" },
+        { className: "Land_Stretcher_01_F", displayName: "Stretcher", tags: ["structure", "medical"], kind: "structure" },
+        { className: "Land_Stretcher_01_olive_F", displayName: "Stretcher (Olive)", tags: ["structure", "medical"], kind: "structure" },
+        { className: "3AS_Medical_Stretcher", displayName: "Stretcher", tags: ["structure", "medical"], kind: "structure" },
         { className: "3AS_Terminal_Med_Wall_1", displayName: "Medical Terminal Wall", tags: ["prop", "medical", "terminal"], subkind: "terminal" },
         { className: "Box_I_UAV_06_medical_F", displayName: "Medical Case", tags: ["prop", "medical", "medical_crate"], subkind: "case" }
       ]) {
@@ -883,7 +922,7 @@ describe("catalog database", () => {
           latestScanId: "scan_similarity",
           configPath: "CfgVehicles",
           displayName: item.displayName,
-          kind: "prop",
+          kind: item.kind ?? "prop",
           subkind: item.subkind,
           modelPath: "\\a3\\props_f\\medical.p3d",
           scope: 2,
@@ -898,6 +937,10 @@ describe("catalog database", () => {
       }
 
       expect(findSimilarCatalogClasses(catalog, "3AS_Medical_Bed", 3)[0]).toMatchObject({ class_name: "3AS_Medical_Scanner" });
+      expect(findSimilarCatalogClasses(catalog, "Land_Stretcher_01_F", 3).map((item) => item.class_name)).toEqual([
+        "3AS_Medical_Stretcher",
+        "Land_Stretcher_01_olive_F"
+      ]);
     } finally {
       closeCatalogDb(catalog);
     }

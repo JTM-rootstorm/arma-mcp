@@ -3072,6 +3072,12 @@ function roleRecommendationQueries(role: string): string[] {
   if (normalized === "supply" || normalized === "generator_supply") {
     return ["supply box", "ammo crate", "cargo supply"];
   }
+  if (normalized === "generator_fortification") {
+    return ["hbarrier", "bag fence", "sandbag", "barrier wall"];
+  }
+  if (normalized === "generator_structure") {
+    return ["cargo tower", "patrol tower", "bunker", "guard tower"];
+  }
   return [];
 }
 
@@ -3106,10 +3112,15 @@ function catalogIdentityText(item: Record<string, unknown>): string {
     .toLowerCase();
 }
 
+function catalogTokenText(item: Record<string, unknown>): string {
+  return catalogIdentityText(item).replace(/[_-]+/g, " ");
+}
+
 function roleSpecificScore(role: string, item: Record<string, unknown>): number {
   const normalized = role.trim().toLowerCase().replace(/[\s-]+/g, "_");
   const text = catalogText(item);
   const identityText = catalogIdentityText(item);
+  const identityTokens = catalogTokenText(item);
   const kind = String(item.kind ?? "").toLowerCase();
   const subkind = String(item.subkind ?? "").toLowerCase();
   const tags = Array.isArray(item.tags) ? item.tags.map((tag) => String(tag).toLowerCase()) : [];
@@ -3124,6 +3135,15 @@ function roleSpecificScore(role: string, item: Record<string, unknown>): number 
     if (["fortification", "structure"].includes(kind) || text.match(/\b(barrier|hbarrier|bagfence|sandbag|bunker|wall|cover)\b/)) {
       score += 1.0;
     }
+    if (tags.some((tag) => ["wall_segment", "cover_low", "cover_high", "barricade"].includes(tag))) {
+      score += 0.4;
+    }
+    if (identityTokens.match(/\b(h ?barrier|hbarrier|bag\s*fence|bagfence|sandbag|barricade|roadblock|barrier)\b/)) {
+      score += 1.0;
+    }
+    if (identityTokens.match(/\b(doorframe|door frame|door|gate|mesh|decal|item)\b/)) {
+      score -= 1.1;
+    }
     if (text.match(/\b(plane|aircraft|ship|vehicle)\b/)) {
       score -= 0.8;
     }
@@ -3131,6 +3151,21 @@ function roleSpecificScore(role: string, item: Record<string, unknown>): number 
   if (normalized === "generator_structure") {
     if (["structure", "fortification"].includes(kind) || text.match(/\b(building|house|tower|bunker|cargo|patrol)\b/)) {
       score += 1.0;
+    }
+    if (tags.some((tag) => ["watchtower", "bunker"].includes(tag))) {
+      score += 0.5;
+    }
+    if (identityTokens.match(/\b(cargo|patrol|guard|watch|observation)\s*(tower|post|building)\b|\b(tower|bunker|building|house)\b/)) {
+      score += 1.0;
+    }
+    if (identityTokens.match(/\b(building position|helper|helpers|vrobjects?|editor helper)\b/)) {
+      score -= 2.4;
+    }
+    if (identityTokens.match(/\b(doorframe|door frame|mesh|decal)\b/)) {
+      score -= 2.1;
+    }
+    if (identityTokens.match(/\b(item|bipod|grip|optic|muzzle|attachment|magazine|weapon)\b/)) {
+      score -= 1.4;
     }
     if (text.match(/\b(plane|aircraft|weapon|magazine)\b/)) {
       score -= 0.9;
@@ -3173,7 +3208,24 @@ function roleSpecificScore(role: string, item: Record<string, unknown>): number 
 }
 
 function rankRoleRecommendations(role: string, items: Record<string, unknown>[]): Record<string, unknown>[] {
-  return [...items].sort((left, right) => roleSpecificScore(role, right) - roleSpecificScore(role, left));
+  return [...items]
+    .filter((item) => !isUnsuitableRoleCandidate(role, item))
+    .sort((left, right) => roleSpecificScore(role, right) - roleSpecificScore(role, left));
+}
+
+function isUnsuitableRoleCandidate(role: string, item: Record<string, unknown>): boolean {
+  const normalized = role.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const identityText = catalogTokenText(item);
+  if (identityText.match(/\b(wreck|ruin|debris|crater|destroyed|placeablemagazine)\b/) || String(item.class_name ?? "").toLowerCase().includes("_wreck")) {
+    return true;
+  }
+  if (normalized === "generator_fortification") {
+    return Boolean(identityText.match(/\b(doorframe|door frame|mesh|decal|item)\b/));
+  }
+  if (normalized === "generator_structure") {
+    return Boolean(identityText.match(/\b(building position|helper|helpers|vrobjects?|editor helper|item|bipod|grip|optic|muzzle|attachment|weapon|doorframe|door frame|mesh|decal)\b/));
+  }
+  return false;
 }
 
 export function findSimilarCatalogClasses(
@@ -3217,7 +3269,7 @@ function similarCatalogQueries(sourceText: string, source: Record<string, unknow
   if (sourceText.includes("medical")) {
     queries.add("medical");
   }
-  if (sourceText.includes("bed") || String(source.subkind ?? "").toLowerCase() === "bed") {
+  if (isMedicalFurnitureSource(sourceText, source)) {
     queries.add("medical bed");
     queries.add("stretcher");
     queries.add("scanner");
@@ -3225,9 +3277,14 @@ function similarCatalogQueries(sourceText: string, source: Record<string, unknow
   return [...queries];
 }
 
+function isMedicalFurnitureSource(sourceText: string, source: Record<string, unknown>): boolean {
+  const subkind = String(source.subkind ?? "").toLowerCase();
+  return Boolean(sourceText.match(/\b(bed|stretcher|scanner|surgery)\b/) || ["bed", "stretcher", "scanner"].includes(subkind));
+}
+
 function similarCatalogScore(sourceText: string, source: Record<string, unknown>, candidate: Record<string, unknown>): number {
   const text = catalogText(candidate);
-  const identityText = catalogIdentityText(candidate);
+  const identityText = catalogTokenText(candidate);
   const sourceTags = new Set(Array.isArray(source.tags) ? source.tags.map(String) : []);
   const candidateTags = Array.isArray(candidate.tags) ? candidate.tags.map(String) : [];
   let score = 0;
@@ -3245,13 +3302,14 @@ function similarCatalogScore(sourceText: string, source: Record<string, unknown>
   if (sourceText.includes("medical") && text.includes("medical")) {
     score += 0.4;
   }
-  if (sourceText.includes("bed") && identityText.match(/\b(bed|stretcher|scanner|surgery)\b/)) {
+  const sourceIsMedicalFurniture = isMedicalFurnitureSource(sourceText, source);
+  if (sourceIsMedicalFurniture && identityText.match(/\b(bed|stretcher|scanner|surgery)\b/)) {
     score += 1.6;
   }
-  if (sourceText.includes("bed") && identityText.match(/\b(terminal|console|case|box|crate)\b/)) {
+  if (sourceIsMedicalFurniture && identityText.match(/\b(terminal|console|case|box|crate)\b/)) {
     score -= 1.8;
   }
-  if (sourceText.includes("bed") && identityText.match(/\b(first aid|kit|sign|label|truck|container|backpack|rucksack|barrack)\b/)) {
+  if (sourceIsMedicalFurniture && identityText.match(/\b(first aid|kit|sign|label|truck|container|backpack|rucksack|barrack)\b/)) {
     score -= 0.9;
   }
   return score;
