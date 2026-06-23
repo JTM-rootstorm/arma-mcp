@@ -1674,6 +1674,25 @@ describe("synthetic Eden action inventory", () => {
     expect(pollCommands).toContain('["postResult", toJSON _payload] call AMCP_fnc_callBridge');
   });
 
+  it("backs off the Eden poll loop while the local bridge is offline", () => {
+    const pollCommands = sqf("addons/main/functions/fn_pollCommands.sqf");
+
+    expect(pollCommands).toContain("private _pollDelay = 1;");
+    expect(pollCommands).toContain("_pollDelay = 1;");
+    expect(pollCommands).toContain("_pollDelay = (_pollDelay * 2) min 5;");
+    expect(pollCommands).toContain("sleep _pollDelay;");
+  });
+
+  it("keeps native bridge retries cheap while the sidecar is offline", () => {
+    const extension = readFileSync(join(repoRoot, "extension", "src", "ArmaMCP.cpp"), "utf8");
+
+    expect(extension).toContain("constexpr int kConnectTimeoutMs = 50;");
+    expect(extension).toContain("constexpr int kMaxBridgeRetryDelayMs = 5000;");
+    expect(extension).toContain("bridge_retry_pending");
+    expect(extension).toContain("mark_bridge_failure");
+    expect(extension).toContain("SO_ERROR");
+  });
+
   it("allows camera captures to use an external Linux screenshot backend", () => {
     const cameraControl = sqf("addons/main/functions/fn_cameraControl.sqf");
 

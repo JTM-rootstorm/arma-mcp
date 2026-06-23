@@ -41,7 +41,10 @@ static void close_socket(socket_handle socket) { close(socket); }
 
 namespace {
 
-constexpr int kTimeoutMs = 500;
+constexpr int kConnectTimeoutMs = 50;
+constexpr int kIoTimeoutMs = 500;
+constexpr int kInitialBridgeRetryDelayMs = 1000;
+constexpr int kMaxBridgeRetryDelayMs = 5000;
 constexpr int kMaxResponseBytes = 256 * 1024;
 
 struct Config {
@@ -55,6 +58,53 @@ struct HttpResponse {
     std::string body;
     std::string error;
 };
+
+struct BridgeRetryState {
+    int failures = 0;
+    std::chrono::steady_clock::time_point next_attempt = std::chrono::steady_clock::time_point::min();
+};
+
+BridgeRetryState &bridge_retry_state() {
+    static BridgeRetryState state;
+    return state;
+}
+
+bool is_transient_bridge_error(const std::string &error) {
+    return error == "bridge_unavailable" || error == "bridge_timeout" || error == "send_failed" ||
+           error == "empty_response";
+}
+
+bool bridge_retry_pending(std::string &error) {
+    BridgeRetryState &state = bridge_retry_state();
+    if (state.failures <= 0) {
+        return false;
+    }
+
+    if (std::chrono::steady_clock::now() >= state.next_attempt) {
+        return false;
+    }
+
+    error = "bridge_retry_pending";
+    return true;
+}
+
+void mark_bridge_success() {
+    BridgeRetryState &state = bridge_retry_state();
+    state.failures = 0;
+    state.next_attempt = std::chrono::steady_clock::time_point::min();
+}
+
+void mark_bridge_failure(const std::string &error) {
+    if (!is_transient_bridge_error(error)) {
+        return;
+    }
+
+    BridgeRetryState &state = bridge_retry_state();
+    state.failures = std::min(state.failures + 1, 6);
+    const int multiplier = 1 << std::min(state.failures - 1, 3);
+    const int delay_ms = std::min(kInitialBridgeRetryDelayMs * multiplier, kMaxBridgeRetryDelayMs);
+    state.next_attempt = std::chrono::steady_clock::now() + std::chrono::milliseconds(delay_ms);
+}
 
 std::string trim(std::string value) {
     auto not_space = [](unsigned char character) { return std::isspace(character) == 0; };
@@ -166,29 +216,54 @@ bool set_nonblocking(socket_handle socket, bool nonblocking) {
 #endif
 }
 
-void set_socket_timeouts(socket_handle socket) {
+void set_socket_timeouts(socket_handle socket, int timeout_ms) {
 #ifdef _WIN32
-    DWORD timeout = kTimeoutMs;
+    DWORD timeout = static_cast<DWORD>(timeout_ms);
     setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&timeout), sizeof(timeout));
     setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char *>(&timeout), sizeof(timeout));
 #else
     timeval timeout{};
     timeout.tv_sec = 0;
-    timeout.tv_usec = kTimeoutMs * 1000;
+    timeout.tv_usec = timeout_ms * 1000;
     setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 #endif
 }
 
-bool wait_for_socket(socket_handle socket, bool write) {
+bool wait_for_socket(socket_handle socket, bool write, int timeout_ms) {
     fd_set fds;
     FD_ZERO(&fds);
     FD_SET(socket, &fds);
     timeval timeout{};
     timeout.tv_sec = 0;
-    timeout.tv_usec = kTimeoutMs * 1000;
+    timeout.tv_usec = timeout_ms * 1000;
     int result = select(static_cast<int>(socket + 1), write ? nullptr : &fds, write ? &fds : nullptr, nullptr, &timeout);
     return result > 0;
+}
+
+bool socket_connect_succeeded(socket_handle socket, std::string &error) {
+#ifdef _WIN32
+    int socket_error = 0;
+    int length = sizeof(socket_error);
+    if (getsockopt(socket, SOL_SOCKET, SO_ERROR, reinterpret_cast<char *>(&socket_error), &length) != 0) {
+        error = "bridge_unavailable";
+        return false;
+    }
+#else
+    int socket_error = 0;
+    socklen_t length = sizeof(socket_error);
+    if (getsockopt(socket, SOL_SOCKET, SO_ERROR, &socket_error, &length) != 0) {
+        error = "bridge_unavailable";
+        return false;
+    }
+#endif
+
+    if (socket_error != 0) {
+        error = "bridge_unavailable";
+        return false;
+    }
+
+    return true;
 }
 
 socket_handle connect_localhost(const Config &config, std::string &error) {
@@ -205,7 +280,7 @@ socket_handle connect_localhost(const Config &config, std::string &error) {
         return invalid_socket_handle;
     }
 
-    set_socket_timeouts(socket);
+    set_socket_timeouts(socket, kIoTimeoutMs);
     set_nonblocking(socket, true);
 
     sockaddr_in address{};
@@ -229,8 +304,12 @@ socket_handle connect_localhost(const Config &config, std::string &error) {
             close_socket(socket);
             return invalid_socket_handle;
         }
-        if (!wait_for_socket(socket, true)) {
+        if (!wait_for_socket(socket, true, kConnectTimeoutMs)) {
             error = "bridge_timeout";
+            close_socket(socket);
+            return invalid_socket_handle;
+        }
+        if (!socket_connect_succeeded(socket, error)) {
             close_socket(socket);
             return invalid_socket_handle;
         }
@@ -261,8 +340,13 @@ HttpResponse http_request(const std::string &method, const std::string &path, co
     }
 
     std::string error;
+    if (bridge_retry_pending(error)) {
+        return {.status = 0, .body = "", .error = error};
+    }
+
     socket_handle socket = connect_localhost(config, error);
     if (socket == invalid_socket_handle) {
+        mark_bridge_failure(error);
         return {.status = 0, .body = "", .error = error};
     }
 
@@ -282,6 +366,7 @@ HttpResponse http_request(const std::string &method, const std::string &path, co
 
     if (!send_all(socket, request.str())) {
         close_socket(socket);
+        mark_bridge_failure("send_failed");
         return {.status = 0, .body = "", .error = "send_failed"};
     }
 
@@ -297,6 +382,7 @@ HttpResponse http_request(const std::string &method, const std::string &path, co
     close_socket(socket);
 
     if (raw.empty()) {
+        mark_bridge_failure("empty_response");
         return {.status = 0, .body = "", .error = "empty_response"};
     }
 
@@ -315,6 +401,7 @@ HttpResponse http_request(const std::string &method, const std::string &path, co
         return {.status = status, .body = body_out, .error = "http_" + std::to_string(status)};
     }
 
+    mark_bridge_success();
     return {.status = status, .body = body_out, .error = ""};
 }
 

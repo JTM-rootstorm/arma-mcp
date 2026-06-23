@@ -3,9 +3,11 @@ if (!is3DEN) exitWith {};
 
 ["Starting Eden bridge poll loop"] call AMCP_fnc_log;
 
+private _pollDelay = 1;
 while {hasInterface && is3DEN} do {
     private _result = ["pollCommands"] call AMCP_fnc_callBridge;
     if ((_result select [0, 3]) isEqualTo "OK:") then {
+        _pollDelay = 1;
         private _json = _result select [3];
         if (_json isNotEqualTo "") then {
             private _body = fromJSON _json;
@@ -49,8 +51,10 @@ while {hasInterface && is3DEN} do {
                 } forEach _commands;
             };
         };
+    } else {
+        _pollDelay = (_pollDelay * 2) min 5;
     };
-    sleep 1;
+    sleep _pollDelay;
 };
 
 ["Stopped Eden bridge poll loop"] call AMCP_fnc_log;

@@ -55,4 +55,4 @@ x86_64-w64-mingw32-g++ -std=c++17 -O2 -shared -static -static-libgcc -static-lib
 The MinGW path prefers a self-contained DLL so Proton/Windows does not need
 extra GCC runtime DLLs beside the mod.
 
-The extension returns short strings in `OK:<json>` or `ERR:<message>` form and uses short localhost socket timeouts so Eden does not freeze for multi-second bridge failures.
+The extension returns short strings in `OK:<json>` or `ERR:<message>` form and uses short localhost connect timeouts plus an offline retry backoff so Eden does not freeze while the bridge is not running.
